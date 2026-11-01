@@ -49,6 +49,7 @@ class Row:
     recording: Path
     part: ChunkResult | None
     cells: tuple[str, ...]
+    detail: dict[str, object] | None = None
 
 
 @dataclass
@@ -190,11 +191,14 @@ class Results:
         questions = self._questions()
         for part in recording.parts:
             span = f"{_clock(part.start_ms)} to {_clock(part.end_ms)}"
-            yield Row(path, part, (path.name, span, *_part_cells(part, questions)))
+            cells = (path.name, span, *_part_cells(part, questions))
+            yield Row(path, part, cells, _detail(part))
 
         last = recording.parts[-1] if recording.parts else None
+        detail = None
         if recording.unreadable is not None:
             status, span = "Failed: unreadable file", ""
+            detail = _describe_error(recording.unreadable)
         elif recording.sending_from is not None:
             status, span = "Sending", f"from {_clock(recording.sending_from)}"
         elif recording.finished or (last is not None and _resent(last)):
@@ -204,7 +208,8 @@ class Results:
         else:
             status = "Waiting"
             span = "" if last is None else f"from {_clock(last.end_ms)}"
-        yield Row(path, None, (path.name, span, status, *[""] * len(questions)))
+        cells = (path.name, span, status, *[""] * len(questions))
+        yield Row(path, None, cells, detail)
 
     def _exported_parts(self) -> Iterator[dict[str, object]]:
         for path, recording in self._recordings.items():
@@ -221,17 +226,25 @@ class Results:
                         "response": part.response.model_dump(mode="json"),
                     }
                 elif part.error is not None:
-                    yield {**entry, "error": describe_error(part.error)}
+                    yield {**entry, "error": _describe_error(part.error)}
             if recording.unreadable is not None:
                 yield {
                     "recording": path.name,
                     "start_ms": None,
                     "end_ms": None,
-                    "error": describe_error(recording.unreadable),
+                    "error": _describe_error(recording.unreadable),
                 }
 
 
-def describe_error(error: Exception) -> dict[str, object]:
+def _detail(part: ChunkResult) -> dict[str, object] | None:
+    if part.response is not None:
+        return part.response.model_dump(mode="json")
+    if part.error is not None:
+        return _describe_error(part.error)
+    return None
+
+
+def _describe_error(error: Exception) -> dict[str, object]:
     if isinstance(error, ApiError):
         body = error.body
         if isinstance(body, BaseModel):

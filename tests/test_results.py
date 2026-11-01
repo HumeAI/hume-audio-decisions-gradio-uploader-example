@@ -404,6 +404,34 @@ def test_removing_a_recording_drops_its_answers() -> None:
     assert results.status().endswith("700 input tokens billed.")
 
 
+def test_each_row_carries_its_response_or_error() -> None:
+    results = started(LONG_CALL, CALL)
+    send(
+        results,
+        LONG_CALL,
+        answered(0, 0, 274_000),
+        failed(1, 274_000, 548_000, file_error("audio_decode_failed")),
+        not_sent(2, 548_000, 822_000),
+        finish=True,
+    )
+    results.record(Unreadable(Stretch(CALL, 0), ValueError("The audio is empty.")))
+
+    assert [row.detail for row in results.rows()] == [
+        response(run_id="run-0").model_dump(mode="json"),
+        {
+            "status_code": 400,
+            "body": {
+                "type": "error",
+                "code": "audio_decode_failed",
+                "message": "audio_decode_failed.",
+                "request_id": "req",
+            },
+        },
+        None,
+        {"message": "The audio is empty."},
+    ]
+
+
 def test_the_downloads_hold_the_table_and_every_response_and_error(
     tmp_path: Path,
 ) -> None:
