@@ -1,0 +1,287 @@
+import asyncio
+import itertools
+import time
+import wave
+from collections.abc import Callable, Coroutine, Sequence
+from pathlib import Path
+
+import httpx
+import pytest
+from hume_audio_decisions import DecisionsRequest, Question_Noul
+from hume_audio_decisions.core import ApiError
+
+from evaluation import (
+    CONCURRENT_RECORDINGS,
+    MAX_RETRIES,
+    BatchStopped,
+    Finished,
+    PartResult,
+    Progress,
+    Started,
+    Stretch,
+    Unreadable,
+    evaluate,
+    make_client,
+)
+
+pytestmark = pytest.mark.anyio
+
+REQUEST = DecisionsRequest(
+    questions={"speech": Question_Noul(instructions="Is someone speaking?")}
+)
+SAMPLE_RATE = 8000
+FAST = 600_000
+
+Handler = Callable[[httpx.Request], Coroutine[None, None, httpx.Response]]
+
+
+@pytest.fixture(autouse=True)
+def api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUME_API_KEY", "test-key")
+
+
+def write_wav(path: Path, duration_ms: int) -> Stretch:
+    with path.open("wb") as file, wave.open(file, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(SAMPLE_RATE)
+        wav.writeframes(bytes(SAMPLE_RATE * duration_ms // 1000 * 2))
+    return Stretch(path)
+
+
+def answered() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "run_id": "run",
+            "answers": {"speech": {"type": "noul", "noul": 0.5}},
+            "received": {"input_tokens": 100},
+        },
+    )
+
+
+def failed(
+    status: int, code: str, headers: dict[str, str] | None = None
+) -> httpx.Response:
+    return httpx.Response(
+        status,
+        headers=headers,
+        json={"type": "error", "code": code, "message": code, "request_id": "req"},
+    )
+
+
+def sent_file(request: httpx.Request) -> str:
+    return request.content.split(b'filename="')[1].split(b'"')[0].decode()
+
+
+async def collect(
+    handler: Handler,
+    stretches: Sequence[Stretch],
+    *,
+    requests_per_minute: float = FAST,
+    stop: asyncio.Event | None = None,
+) -> list[Progress]:
+    client = make_client(
+        requests_per_minute=requests_per_minute,
+        transport=httpx.MockTransport(handler),
+    )
+    stop = stop or asyncio.Event()
+    return [update async for update in evaluate(client, REQUEST, stretches, stop)]
+
+
+def parts(progress: list[Progress], stretch: Stretch) -> list[PartResult]:
+    return [
+        update
+        for update in progress
+        if isinstance(update, PartResult) and update.stretch == stretch
+    ]
+
+
+def api_error(result: PartResult) -> ApiError:
+    assert isinstance(result.part.error, ApiError)
+    return result.part.error
+
+
+async def test_sends_a_long_recording_as_even_parts(tmp_path: Path) -> None:
+    stretch = write_wav(tmp_path / "long_call.wav", 822_000)
+
+    async def handle(_request: httpx.Request) -> httpx.Response:
+        return answered()
+
+    progress = await collect(handle, [stretch])
+
+    assert progress == [Started(stretch), *parts(progress, stretch), Finished(stretch)]
+    assert [
+        (p.part.start_ms, p.part.end_ms, p.part.status)
+        for p in parts(progress, stretch)
+    ] == [
+        (0, 274_000, "succeeded"),
+        (274_000, 548_000, "succeeded"),
+        (548_000, 822_000, "succeeded"),
+    ]
+
+
+async def test_sends_only_the_stretch_it_is_given(tmp_path: Path) -> None:
+    recording = write_wav(tmp_path / "long_call.wav", 822_000)
+    stretch = Stretch(recording.path, start_ms=274_000)
+
+    async def handle(_request: httpx.Request) -> httpx.Response:
+        return answered()
+
+    progress = await collect(handle, [stretch])
+
+    assert [(p.part.start_ms, p.part.end_ms) for p in parts(progress, stretch)] == [
+        (274_000, 548_000),
+        (548_000, 822_000),
+    ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param(
+            httpx.Response(401, json={"message": "Invalid API key"}), id="401"
+        ),
+        pytest.param(failed(402, "payment_required"), id="402"),
+        pytest.param(failed(403, "forbidden"), id="403"),
+        pytest.param(failed(400, "message_invalid"), id="message_invalid"),
+        pytest.param(failed(400, "question_invalid"), id="question_invalid"),
+    ],
+)
+async def test_an_error_every_recording_would_hit_stops_the_batch(
+    tmp_path: Path, response: httpx.Response
+) -> None:
+    stretches = [
+        write_wav(tmp_path / f"{index}.wav", 5_000)
+        for index in range(CONCURRENT_RECORDINGS + 2)
+    ]
+    requests: list[httpx.Request] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return response
+
+    # Requests 100 ms apart leave time for the first error to stop the rest.
+    progress = await collect(handle, stretches, requests_per_minute=600)
+
+    started = [update.stretch for update in progress if isinstance(update, Started)]
+    assert started == stretches[:CONCURRENT_RECORDINGS]
+    assert len(requests) == 1
+    (result,) = [update for update in progress if isinstance(update, PartResult)]
+    assert api_error(result).status_code == response.status_code
+    assert progress[-1] == BatchStopped(api_error(result))
+
+
+async def test_an_error_about_one_file_fails_only_its_recording(
+    tmp_path: Path,
+) -> None:
+    bad = write_wav(tmp_path / "bad.wav", 5_000)
+    good = write_wav(tmp_path / "good.wav", 5_000)
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        if sent_file(request) == "bad.wav":
+            return failed(400, "audio_decode_failed")
+        return answered()
+
+    progress = await collect(handle, [bad, good])
+
+    assert [api_error(p).status_code for p in parts(progress, bad)] == [400]
+    assert [p.part.status for p in parts(progress, good)] == ["succeeded"]
+    assert Finished(bad) in progress
+    assert Finished(good) in progress
+    assert not any(isinstance(update, BatchStopped) for update in progress)
+
+
+async def test_a_file_the_sdk_cannot_split_fails_without_a_request(
+    tmp_path: Path,
+) -> None:
+    unreadable = Stretch(tmp_path / "notes.wav")
+    unreadable.path.write_bytes(b"These are notes, not audio.")
+    good = write_wav(tmp_path / "good.wav", 5_000)
+    requests: list[httpx.Request] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return answered()
+
+    progress = await collect(handle, [unreadable, good])
+
+    assert [sent_file(request) for request in requests] == ["good.wav"]
+    (failure,) = [u for u in progress if isinstance(u, Unreadable)]
+    assert failure.stretch == unreadable
+    assert Finished(unreadable) not in progress
+    assert Finished(good) in progress
+
+
+async def test_stop_cancels_the_request_in_flight_and_keeps_the_answers(
+    tmp_path: Path,
+) -> None:
+    stretch = write_wav(tmp_path / "call.wav", 360_000)
+    stop = asyncio.Event()
+    cancelled = asyncio.Event()
+    requests: list[httpx.Request] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return answered()
+        stop.set()
+        unanswered: asyncio.Future[httpx.Response] = (
+            asyncio.get_running_loop().create_future()
+        )
+        try:
+            return await unanswered
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    # Without Stop, the request in flight would never return.
+    async with asyncio.timeout(5):
+        progress = await collect(handle, [stretch], stop=stop)
+
+    assert cancelled.is_set()
+    assert len(requests) == len(parts(progress, stretch)) + 1
+    assert progress == [Started(stretch), *parts(progress, stretch)]
+    assert [(p.part.start_ms, p.part.status) for p in parts(progress, stretch)] == [
+        (0, "succeeded")
+    ]
+
+
+async def test_requests_are_paced_including_retries(tmp_path: Path) -> None:
+    stretches = [
+        write_wav(tmp_path / f"{index}.wav", 5_000)
+        for index in range(CONCURRENT_RECORDINGS)
+    ]
+    sent_at: list[float] = []
+
+    async def handle(_request: httpx.Request) -> httpx.Response:
+        sent_at.append(time.monotonic())
+        if len(sent_at) == 1:
+            return httpx.Response(
+                429, headers={"retry-after-ms": "1"}, json={"message": "Slow down"}
+            )
+        return answered()
+
+    progress = await collect(handle, stretches, requests_per_minute=600)
+
+    assert len(sent_at) == CONCURRENT_RECORDINGS + 1
+    gaps = [later - earlier for earlier, later in itertools.pairwise(sent_at)]
+    # The transport sees each request a little after the pacer lets it go, by an
+    # amount that varies from request to request.
+    assert min(gaps) >= 0.1 - 0.01
+    for stretch in stretches:
+        assert [p.part.status for p in parts(progress, stretch)] == ["succeeded"]
+
+
+async def test_a_server_error_is_retried_before_its_part_fails(tmp_path: Path) -> None:
+    stretch = write_wav(tmp_path / "call.wav", 5_000)
+    requests: list[httpx.Request] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return failed(503, "server_busy", headers={"retry-after-ms": "1"})
+
+    progress = await collect(handle, [stretch])
+
+    assert len(requests) == MAX_RETRIES + 1
+    assert [api_error(p).status_code for p in parts(progress, stretch)] == [503]
