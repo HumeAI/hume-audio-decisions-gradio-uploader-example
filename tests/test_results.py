@@ -73,10 +73,12 @@ def response(
     )
 
 
+def error_body(code: str) -> Error:
+    return Error(type="error", code=code, message=f"{code}.", request_id="req")
+
+
 def file_error(code: str) -> BadRequestError:
-    return BadRequestError(
-        body=Error(type="error", code=code, message=f"{code}.", request_id="req")
-    )
+    return BadRequestError(body=error_body(code))
 
 
 def unauthorized() -> UnauthorizedError:
@@ -353,14 +355,7 @@ def test_a_failure_that_can_pass_is_sent_again_with_the_rest() -> None:
                     0,
                     0,
                     274_000,
-                    ContentTooLargeError(
-                        body=Error(
-                            type="error",
-                            code="payload_too_large",
-                            message="payload_too_large.",
-                            request_id="req",
-                        )
-                    ),
+                    ContentTooLargeError(body=error_body("payload_too_large")),
                 ),
             ),
             id="a part too large to send",

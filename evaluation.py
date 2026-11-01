@@ -68,12 +68,14 @@ def make_client(
 ) -> AsyncDecisionsClient:
     pacer = _Pacer(interval=60 / requests_per_minute)
     http_client = httpx.AsyncClient(
-        # The SDK sets its own 60-second timeout only on a client it makes itself.
-        timeout=TIMEOUT_SECONDS,
-        event_hooks={"request": [pacer]},
-        transport=transport,
+        event_hooks={"request": [pacer]}, transport=transport
     )
-    return AsyncDecisionsClient(httpx_client=http_client)
+    return AsyncDecisionsClient(
+        httpx_client=http_client,
+        # The SDK's default timeout applies only to an httpx client it makes itself.
+        timeout=TIMEOUT_SECONDS,
+        max_retries=MAX_RETRIES,
+    )
 
 
 async def evaluate(
@@ -99,6 +101,15 @@ async def evaluate(
         await sending
     finally:
         sending.cancel()
+
+
+def is_api_error(
+    error: Exception | None, statuses: frozenset[int], codes: frozenset[str]
+) -> TypeGuard[ApiError]:
+    return isinstance(error, ApiError) and (
+        error.status_code in statuses
+        or (isinstance(error.body, Error) and error.body.code in codes)
+    )
 
 
 def cut(stretch: Stretch) -> bytes:
@@ -168,31 +179,24 @@ async def _send_stretches(
         report(Started(stretch))
         file = await asyncio.to_thread(stretch.path.open, "rb")
         with file:
-            parts: AsyncIterator[ChunkResult] = client.decisions.iter_create_chunked(
+            parts = client.decisions.iter_create_chunked(
                 request=request,
                 file=(stretch.path.name, file),
                 max_chunk_ms=MAX_PART_MS,
                 start_ms=stretch.start_ms,
                 end_ms=stretch.end_ms,
-                request_options={"max_retries": MAX_RETRIES},
             )
             try:
                 async for part in parts:
                     report(PartResult(stretch, part))
-                    if _stops_batch(part.error):
+                    if is_api_error(
+                        part.error, _BATCH_STOPPING_STATUSES, _BATCH_STOPPING_CODES
+                    ):
                         report(BatchStopped(part.error))
                         raise _HaltError
             # The SDK raises ValueError only before it sends anything, when it can't
             # split the file.
             except ValueError as error:
                 report(Unreadable(stretch, error))
-                continue
-        report(Finished(stretch))
-
-
-def _stops_batch(error: Exception | None) -> TypeGuard[ApiError]:
-    if not isinstance(error, ApiError):
-        return False
-    if error.status_code in _BATCH_STOPPING_STATUSES:
-        return True
-    return isinstance(error.body, Error) and error.body.code in _BATCH_STOPPING_CODES
+            else:
+                report(Finished(stretch))

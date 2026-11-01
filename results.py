@@ -1,9 +1,10 @@
 import csv
 import json
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, TypeAlias, assert_never
 
 import httpx
 from hume_audio_decisions import (
@@ -27,6 +28,7 @@ from evaluation import (
     Started,
     Stretch,
     Unreadable,
+    is_api_error,
 )
 
 COLUMNS = ("Recording", "Part", "Status", "Tokens")
@@ -43,16 +45,27 @@ _FILE_ERROR_CODES = frozenset(
     }
 )
 
+_RecordingState: TypeAlias = Literal["answered", "failed", "sending", "waiting"]
+
 
 @dataclass(frozen=True)
 class Row:
     recording: Path
     part: ChunkResult | None
     cells: tuple[str, ...]
-    detail: dict[str, object] | None = None
+    error: Exception | None = None
     # The stretch to cut to get exactly the audio sent for the part.
     audio: Stretch | None = None
-    failed: bool = False
+
+    @property
+    def failed(self) -> bool:
+        return self.error is not None
+
+    @property
+    def detail(self) -> dict[str, object] | None:
+        if self.part is not None and self.part.response is not None:
+            return self.part.response.model_dump(mode="json")
+        return None if self.error is None else _describe_error(self.error)
 
 
 @dataclass
@@ -152,9 +165,7 @@ class Results:
     def status(self) -> str:
         if not self._recordings:
             return "Add MP3 or WAV recordings to start."
-        counts = dict.fromkeys(("answered", "failed", "sending", "waiting"), 0)
-        for recording in self._recordings.values():
-            counts[_state(recording)] += 1
+        counts = Counter(_state(recording) for recording in self._recordings.values())
         tokens = sum(
             part.response.received.input_tokens
             for recording in self._recordings.values()
@@ -211,14 +222,12 @@ class Results:
             # An MP3 part starts with frames repeated from before where it was cut,
             # so it is cut again from where the part before it ended.
             audio = Stretch(path, start_ms, part.end_ms)
-            yield Row(path, part, cells, _detail(part), audio, part.error is not None)
+            yield Row(path, part, cells, error=part.error, audio=audio)
             start_ms = part.end_ms
 
         last = recording.parts[-1] if recording.parts else None
-        detail = None
         if recording.unreadable is not None:
             status, span = "Failed: unreadable file", ""
-            detail = _describe_error(recording.unreadable)
         elif recording.sending_from is not None:
             status, span = "Sending", f"from {_clock(recording.sending_from)}"
         elif recording.finished or (last is not None and _resent(last)):
@@ -229,7 +238,7 @@ class Results:
             status = "Waiting"
             span = "" if last is None else f"from {_clock(last.end_ms)}"
         cells = (path.name, span, status, "", *[""] * len(questions))
-        yield Row(path, None, cells, detail, failed=detail is not None)
+        yield Row(path, None, cells, error=recording.unreadable)
 
     def _exported_parts(self) -> Iterator[dict[str, object]]:
         for path, recording in self._recordings.items():
@@ -254,14 +263,6 @@ class Results:
                     "end_ms": None,
                     "error": _describe_error(recording.unreadable),
                 }
-
-
-def _detail(part: ChunkResult) -> dict[str, object] | None:
-    if part.response is not None:
-        return part.response.model_dump(mode="json")
-    if part.error is not None:
-        return _describe_error(part.error)
-    return None
 
 
 def _describe_error(error: Exception) -> dict[str, object]:
@@ -299,14 +300,9 @@ def _resend_from(recording: _Recording) -> int | None:
 
 
 def _resent(part: ChunkResult) -> bool:
-    error = part.error
-    if error is None:
-        return False
-    if not isinstance(error, ApiError):
-        return True
-    if error.status_code in _FILE_ERROR_STATUSES:
-        return False
-    return not (isinstance(error.body, Error) and error.body.code in _FILE_ERROR_CODES)
+    return part.error is not None and not is_api_error(
+        part.error, _FILE_ERROR_STATUSES, _FILE_ERROR_CODES
+    )
 
 
 def _part_cells(part: ChunkResult, questions: list[str]) -> list[str]:
@@ -324,7 +320,7 @@ def _part_cells(part: ChunkResult, questions: list[str]) -> list[str]:
     ]
 
 
-def _state(recording: _Recording) -> str:
+def _state(recording: _Recording) -> _RecordingState:
     if recording.unreadable is not None or any(
         part.status == "failed" for part in recording.parts
     ):
