@@ -1,0 +1,66 @@
+[project]
+name = "hume-audio-decisions-gradio-uploader-example"
+version = "0.1.0"
+description = "A Gradio app that asks the same questions about many recordings with the Hume Audio Decisions API."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "gradio>=6.31.0",
+    "hume-audio-decisions>=0.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
+
+[tool.uv]
+required-version = ">=0.13.6"
+
+# The SDK is not yet published, so it installs from a checkout cloned next to this repository.
+[tool.uv.sources]
+hume-audio-decisions = { path = "../hume-decisions-python-sdk", editable = true }
+
+[tool.ruff.lint]
+select = [
+    "A",
+    "ASYNC",
+    "B",
+    "BLE",
+    "C4",
+    "DTZ",
+    "E",
+    "ERA",
+    "F",
+    "I",
+    "N",
+    "PIE",
+    "PL",
+    "PT",
+    "PTH",
+    "RET",
+    "RUF",
+    "S",
+    "SIM",
+    "T20",
+    "TC",
+    "TID",
+    "UP",
+    "W",
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+warn_unreachable = true
+enable_error_code = [
+    "possibly-undefined",
+    "redundant-expr",
+    "truthy-bool",
+]
+
+[tool.pytest]
+strict = true

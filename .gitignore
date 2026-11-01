@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Tool caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Gradio
+.gradio/
+
+# Environment files
+.env*
+
+# macOS
+.DS_Store
