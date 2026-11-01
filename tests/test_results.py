@@ -138,6 +138,7 @@ def test_each_question_type_has_its_own_cell() -> None:
         "Recording",
         "Part",
         "Status",
+        "Tokens",
         "background_noise",
         "emotion",
         "energy",
@@ -148,11 +149,16 @@ def test_each_question_type_has_its_own_cell() -> None:
             "long_call.wav",
             "4:34 to 9:08",
             "Answered",
+            "1,000",
             "0.13",
             "Happy 0.54",
             "2.92 of 4",
             "6:02, 8:41",
         )
+    ]
+    assert results.numeric_columns() == [
+        *(False, False, False, True),
+        *(True, False, True, False),
     ]
 
 
@@ -193,12 +199,16 @@ def test_a_moment_cell_gives_times_in_the_whole_recording(
         ),
     ],
 )
-def test_a_failed_row_names_the_reason(error: Exception, status: str) -> None:
+def test_a_failed_row_names_the_reason_and_bills_nothing(
+    error: Exception, status: str
+) -> None:
     results = started(CALL)
 
     send(results, CALL, failed(0, 0, 60_000, error), finish=True)
 
-    assert [row[:3] for row in cells(results)] == [("call.wav", "0:00 to 1:00", status)]
+    assert [row[:4] for row in cells(results)] == [
+        ("call.wav", "0:00 to 1:00", status, "")
+    ]
 
 
 def test_rows_follow_a_recording_through_a_run() -> None:
@@ -244,8 +254,29 @@ def test_the_status_line_counts_recordings_and_tokens() -> None:
 
     assert results.status() == (
         "Answered 2 of 5 recordings. 1 failed, 1 sending, 1 waiting. "
-        "12,134 input tokens billed."
+        "Total input tokens billed: 12,134."
     )
+
+
+def test_the_status_line_asks_for_recordings_when_there_are_none() -> None:
+    results = started(CALL)
+    send(results, CALL, answered(0, 0, 60_000), finish=True)
+
+    results.set_recordings([])
+
+    assert results.status() == "Add MP3 or WAV recordings to start."
+
+
+def test_there_are_results_to_clear_from_the_start_of_a_run() -> None:
+    results = Results()
+    results.set_recordings([CALL])
+    assert not results.has_results()
+
+    results.start_run(REQUEST)
+    assert results.has_results()
+
+    results.clear()
+    assert not results.has_results()
 
 
 def test_the_status_line_says_why_the_batch_stopped() -> None:
@@ -258,7 +289,8 @@ def test_the_status_line_says_why_the_batch_stopped() -> None:
 
     assert results.status() == (
         "Answered 0 of 1 recordings. 1 failed, 0 sending, 0 waiting. "
-        "0 input tokens billed. Sending stopped because the API key was rejected."
+        "Total input tokens billed: 0. "
+        "Sending stopped because the API key was rejected."
     )
 
 
@@ -386,8 +418,8 @@ def test_a_changed_request_without_answers_starts_over() -> None:
     stretches = results.start_run(changed)
 
     assert stretches == [Stretch(CALL, 0)]
-    assert results.headers() == ["Recording", "Part", "Status", "laughter"]
-    assert cells(results) == [("call.wav", "", "Waiting", "")]
+    assert results.headers() == ["Recording", "Part", "Status", "Tokens", "laughter"]
+    assert cells(results) == [("call.wav", "", "Waiting", "", "")]
 
 
 def test_removing_a_recording_drops_its_answers() -> None:
@@ -401,7 +433,7 @@ def test_removing_a_recording_drops_its_answers() -> None:
         ("long_call.wav", "0:00 to 1:00", "Answered"),
         ("new.wav", "", "Waiting"),
     ]
-    assert results.status().endswith("700 input tokens billed.")
+    assert results.status().endswith("Total input tokens billed: 700.")
 
 
 def test_each_row_carries_its_response_or_error() -> None:
@@ -430,6 +462,7 @@ def test_each_row_carries_its_response_or_error() -> None:
         None,
         {"message": "The audio is empty."},
     ]
+    assert [row.failed for row in results.rows()] == [False, True, False, True]
 
 
 def test_the_downloads_hold_the_table_and_every_response_and_error(
@@ -506,3 +539,21 @@ def test_a_resumed_mp3_starts_where_its_last_answer_ended() -> None:
     )
 
     assert results.start_run(REQUEST) == [Stretch(recording, 274_000)]
+
+
+def test_an_mp3_part_is_cut_again_from_where_the_part_before_it_ended() -> None:
+    recording = Path("call.mp3")
+    results = started(recording)
+
+    send(
+        results,
+        recording,
+        answered(0, -26, 274_000),
+        answered(1, 273_948, 548_000),
+        finish=True,
+    )
+
+    assert [row.audio for row in results.rows()] == [
+        Stretch(recording, 0, 274_000),
+        Stretch(recording, 274_000, 548_000),
+    ]

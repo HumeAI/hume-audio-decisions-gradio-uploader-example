@@ -4,6 +4,7 @@ const STORAGE_KEY = "audio-decisions-gradio-uploader:theme";
 
 function showThemeIcon() {
   const dark = document.body.classList.contains("dark");
+  element.querySelector("button").setAttribute("aria-pressed", String(dark));
   element.querySelector(".light-icon").hidden = dark;
   element.querySelector(".dark-icon").hidden = !dark;
 }

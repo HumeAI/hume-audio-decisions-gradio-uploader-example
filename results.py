@@ -29,7 +29,7 @@ from evaluation import (
     Unreadable,
 )
 
-COLUMNS = ("Recording", "Part", "Status")
+COLUMNS = ("Recording", "Part", "Status", "Tokens")
 
 # These errors come from the file itself, so sending it again unchanged would fail
 # the same way.
@@ -50,6 +50,9 @@ class Row:
     part: ChunkResult | None
     cells: tuple[str, ...]
     detail: dict[str, object] | None = None
+    # The stretch to cut to get exactly the audio sent for the part.
+    audio: Stretch | None = None
+    failed: bool = False
 
 
 @dataclass
@@ -126,8 +129,18 @@ class Results:
         self._stopped_by = None
         self._clear_parts()
 
+    def has_results(self) -> bool:
+        return self._request is not None
+
     def headers(self) -> list[str]:
         return [*COLUMNS, *self._questions()]
+
+    def numeric_columns(self) -> list[bool]:
+        questions = [] if self._request is None else self._request.questions.values()
+        return [
+            *(column == "Tokens" for column in COLUMNS),
+            *(question.type in ("noul", "score") for question in questions),
+        ]
 
     def rows(self) -> list[Row]:
         return [
@@ -137,6 +150,8 @@ class Results:
         ]
 
     def status(self) -> str:
+        if not self._recordings:
+            return "Add MP3 or WAV recordings to start."
         counts = dict.fromkeys(("answered", "failed", "sending", "waiting"), 0)
         for recording in self._recordings.values():
             counts[_state(recording)] += 1
@@ -149,7 +164,7 @@ class Results:
         line = (
             f"Answered {counts['answered']} of {len(self._recordings)} recordings. "
             f"{counts['failed']} failed, {counts['sending']} sending, "
-            f"{counts['waiting']} waiting. {tokens:,} input tokens billed."
+            f"{counts['waiting']} waiting. Total input tokens billed: {tokens:,}."
         )
         if self._stopped_by is not None:
             line += f" {_stop_reason(self._stopped_by)}"
@@ -189,10 +204,15 @@ class Results:
 
     def _recording_rows(self, path: Path, recording: _Recording) -> Iterator[Row]:
         questions = self._questions()
+        start_ms = 0
         for part in recording.parts:
             span = f"{_clock(part.start_ms)} to {_clock(part.end_ms)}"
             cells = (path.name, span, *_part_cells(part, questions))
-            yield Row(path, part, cells, _detail(part))
+            # An MP3 part starts with frames repeated from before where it was cut,
+            # so it is cut again from where the part before it ended.
+            audio = Stretch(path, start_ms, part.end_ms)
+            yield Row(path, part, cells, _detail(part), audio, part.error is not None)
+            start_ms = part.end_ms
 
         last = recording.parts[-1] if recording.parts else None
         detail = None
@@ -208,8 +228,8 @@ class Results:
         else:
             status = "Waiting"
             span = "" if last is None else f"from {_clock(last.end_ms)}"
-        cells = (path.name, span, status, *[""] * len(questions))
-        yield Row(path, None, cells, detail)
+        cells = (path.name, span, status, "", *[""] * len(questions))
+        yield Row(path, None, cells, detail, failed=detail is not None)
 
     def _exported_parts(self) -> Iterator[dict[str, object]]:
         for path, recording in self._recordings.items():
@@ -292,10 +312,11 @@ def _resent(part: ChunkResult) -> bool:
 def _part_cells(part: ChunkResult, questions: list[str]) -> list[str]:
     if part.response is None:
         status = "Not sent" if part.error is None else f"Failed: {_reason(part.error)}"
-        return [status, *[""] * len(questions)]
+        return [status, "", *[""] * len(questions)]
     answers = part.response.answers
     return [
         "Answered",
+        f"{part.response.received.input_tokens:,}",
         *(
             _cell(answers[question], part.start_ms) if question in answers else ""
             for question in questions

@@ -7,7 +7,7 @@ from typing import TypeGuard
 
 import httpx
 from hume_audio_decisions import AsyncDecisionsClient, DecisionsRequest, Error
-from hume_audio_decisions.audio_helpers import ChunkResult
+from hume_audio_decisions.audio_helpers import ChunkResult, iter_audio_chunks
 from hume_audio_decisions.core import ApiError
 
 # Every API key in an organization shares a limit of 60 requests a minute, so this
@@ -99,6 +99,19 @@ async def evaluate(
         await sending
     finally:
         sending.cancel()
+
+
+def cut(stretch: Stretch) -> bytes:
+    # iter_create_chunked cuts with the same defaults, so a part's stretch comes out
+    # as exactly the audio that was sent for it.
+    with stretch.path.open("rb") as file:
+        chunks = iter_audio_chunks(
+            file,
+            max_chunk_ms=MAX_PART_MS,
+            start_ms=stretch.start_ms,
+            end_ms=stretch.end_ms,
+        )
+        return next(chunks).data
 
 
 class _Pacer:

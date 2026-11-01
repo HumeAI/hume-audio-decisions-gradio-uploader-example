@@ -1,0 +1,33 @@
+/* gr.File's height only caps its list of files, so a short list would shrink the
+   box. The list holds four files; the empty drop zone's height is set in app.py
+   to match, since the label floats over it. */
+#recordings .file-preview-holder {
+  height: 250px;
+}
+
+/* The sidebar fits the window, so the buttons stay in view: the request editor
+   takes the height the rest leaves and scrolls inside. A window too short for its
+   minimum height scrolls the sidebar instead. */
+.sidebar-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-content > .column {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#request {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 200px;
+}
+
+#request .wrap,
+#request .codemirror-wrapper {
+  min-height: 0;
+}

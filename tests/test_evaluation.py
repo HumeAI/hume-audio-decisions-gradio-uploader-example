@@ -20,6 +20,7 @@ from evaluation import (
     Started,
     Stretch,
     Unreadable,
+    cut,
     evaluate,
     make_client,
 )
@@ -40,12 +41,14 @@ def api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HUME_API_KEY", "test-key")
 
 
-def write_wav(path: Path, duration_ms: int) -> Stretch:
+def write_wav(
+    path: Path, duration_ms: int, *, channels: int = 1, rate: int = SAMPLE_RATE
+) -> Stretch:
     with path.open("wb") as file, wave.open(file, "wb") as wav:
-        wav.setnchannels(1)
+        wav.setnchannels(channels)
         wav.setsampwidth(2)
-        wav.setframerate(SAMPLE_RATE)
-        wav.writeframes(bytes(SAMPLE_RATE * duration_ms // 1000 * 2))
+        wav.setframerate(rate)
+        wav.writeframes(bytes(rate * duration_ms // 1000 * 2 * channels))
     return Stretch(path)
 
 
@@ -72,6 +75,15 @@ def failed(
 
 def sent_file(request: httpx.Request) -> str:
     return request.content.split(b'filename="')[1].split(b'"')[0].decode()
+
+
+def sent_audio(request: httpx.Request) -> bytes:
+    boundary = request.headers["content-type"].split("boundary=")[1].encode()
+    for field in request.content.split(b"--" + boundary):
+        headers, _, body = field.partition(b"\r\n\r\n")
+        if b'filename="' in headers:
+            return body.removesuffix(b"\r\n")
+    raise AssertionError("The request has no file.")
 
 
 async def collect(
@@ -119,6 +131,36 @@ async def test_sends_a_long_recording_as_even_parts(tmp_path: Path) -> None:
         (274_000, 548_000, "succeeded"),
         (548_000, 822_000, "succeeded"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("duration_ms", "channels", "rate", "start_ms"),
+    [
+        pytest.param(822_000, 1, SAMPLE_RATE, 274_000, id="parts of a stretch"),
+        pytest.param(20_000, 2, 48_000, 0, id="mixed down and resampled"),
+    ],
+)
+async def test_a_part_cut_again_is_the_audio_that_was_sent(
+    tmp_path: Path, duration_ms: int, channels: int, rate: int, start_ms: int
+) -> None:
+    recording = write_wav(
+        tmp_path / "call.wav", duration_ms, channels=channels, rate=rate
+    )
+    stretch = Stretch(recording.path, start_ms=start_ms)
+    sent: list[bytes] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(sent_audio(request))
+        return answered()
+
+    progress = await collect(handle, [stretch])
+
+    ends = [p.part.end_ms for p in parts(progress, stretch)]
+    starts = [stretch.start_ms, *ends[:-1]]
+    assert [
+        cut(Stretch(recording.path, start, end))
+        for start, end in zip(starts, ends, strict=True)
+    ] == sent
 
 
 async def test_sends_only_the_stretch_it_is_given(tmp_path: Path) -> None:
