@@ -544,6 +544,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "gradio" },
     { name = "hume-audio-decisions" },
+    { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
@@ -557,6 +558,7 @@ dev = [
 requires-dist = [
     { name = "gradio", specifier = ">=6.31.0" },
     { name = "hume-audio-decisions", editable = "../hume-decisions-python-sdk" },
+    { name = "pydantic", specifier = ">=2.14.2" },
 ]
 
 [package.metadata.requires-dev]

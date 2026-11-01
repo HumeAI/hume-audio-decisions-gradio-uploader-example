@@ -116,6 +116,7 @@ pydantic==2.14.2
     #   fastapi
     #   gradio
     #   hume-audio-decisions
+    #   hume-audio-decisions-gradio-uploader-example
 pydantic-core==2.50.2
     # via
     #   hume-audio-decisions
