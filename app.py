@@ -13,11 +13,11 @@ from evaluation import evaluate, make_client
 from questions import DEFAULT_REQUEST, parse_request
 from results import COLUMNS, Results, Row
 
+ASSETS = Path(__file__).parent / "assets"
 TITLE = "Evaluating many recordings"
 INTRODUCTION = (
     "Ask the same questions about many recordings and compare every answer in one "
-    "table. See the [cookbook guide](https://dev.hume.ai/audio-decisions/cookbooks/"
-    "evaluating-many-recordings) and the [Audio Decisions docs]"
+    "table. See the [Audio Decisions docs]"
     "(https://dev.hume.ai/audio-decisions/docs/overview)."
 )
 NO_SELECTION = (
@@ -39,7 +39,7 @@ class Session:
 def build(client: AsyncDecisionsClient) -> gr.Blocks:
     # Gradio's temporary files include the uploads, which can be sensitive, so they
     # are deleted once they are a day old.
-    demo = gr.Blocks(title=TITLE, delete_cache=(86400, 86400))
+    demo = gr.Blocks(title=TITLE, delete_cache=(86400, 86400), fill_height=True)
     with demo:
         session = gr.State(Session, delete_callback=Session.close)
 
@@ -59,10 +59,18 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
             )
             run_button = gr.Button("Run", variant="primary")
             with gr.Row():
-                stop_button = gr.Button("Stop", variant="stop")
+                stop_button = gr.Button("Stop", variant="stop", interactive=False)
                 clear_button = gr.Button("Clear results")
 
-        gr.Markdown(f"# {TITLE}\n\n{INTRODUCTION}")
+        with gr.Row():
+            gr.Markdown(f"# {TITLE}\n\n{INTRODUCTION}")
+            # gr.HTML takes an equal share of a row whatever its scale.
+            with gr.Column(scale=0, min_width=124):
+                gr.HTML(
+                    _asset("header.html"),
+                    css_template=_asset("header.css"),
+                    js_on_load=_asset("header.js"),
+                )
         with gr.Row(equal_height=True):
             status = gr.Markdown(Results().status())
             csv_button = gr.DownloadButton(
@@ -78,6 +86,7 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
             show_row_numbers=True,
             show_search="search",
             max_height=410,
+            scale=1,
         )
         heading = gr.Markdown(NO_SELECTION)
         with gr.Row(equal_height=True):
@@ -97,6 +106,7 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
                 recordings,
                 editor,
                 run_button,
+                stop_button,
                 clear_button,
                 csv_button,
                 json_button,
@@ -120,6 +130,10 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
             api_visibility="private",
         )
     return demo
+
+
+def _asset(name: str) -> str:
+    return (ASSETS / name).read_text(encoding="utf-8")
 
 
 def _set_recordings(paths: list[str] | None, session: Session) -> tuple[str, Any]:
@@ -152,6 +166,7 @@ async def _run(
             gr.File(interactive=False),
             gr.Code(interactive=False),
             gr.Button(interactive=False),
+            gr.Button(interactive=True),
             gr.Button(interactive=False),
             gr.DownloadButton(interactive=False),
             gr.DownloadButton(interactive=False),
@@ -174,6 +189,7 @@ async def _run(
         gr.File(interactive=True),
         gr.Code(interactive=True),
         gr.Button(interactive=True),
+        gr.Button(interactive=False),
         gr.Button(interactive=True),
         gr.DownloadButton(value=csv_path, interactive=True),
         gr.DownloadButton(value=json_path, interactive=True),

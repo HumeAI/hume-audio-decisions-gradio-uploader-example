@@ -1,0 +1,38 @@
+.header-actions,
+nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.header-actions {
+  justify-content: flex-end;
+}
+
+a,
+button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--body-text-color-subdued);
+  cursor: pointer;
+}
+
+a:hover,
+button:hover {
+  background: var(--background-fill-secondary);
+  color: var(--body-text-color);
+}
+
+span {
+  display: flex;
+}
+
+span[hidden] {
+  display: none;
+}
