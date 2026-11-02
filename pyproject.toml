@@ -22,10 +22,6 @@ dev = [
 [tool.uv]
 required-version = ">=0.13.6"
 
-# The SDK is not yet published, so it installs from a checkout cloned next to this repository.
-[tool.uv.sources]
-hume-audio-decisions = { path = "../hume-decisions-python-sdk", editable = true }
-
 [tool.ruff.lint]
 select = [
     "A",
