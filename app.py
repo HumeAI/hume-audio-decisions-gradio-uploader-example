@@ -513,11 +513,9 @@ def main() -> None:
     client = make_client()
     demo = build(client)
     demo.queue(default_concurrency_limit=None)
-    # The app has no endpoints for the API page to list, and Gradio's settings page
-    # switches the theme by reloading, which would discard the results.
-    demo.launch(
-        max_file_size="1gb", css_paths=ASSETS / "app.css", footer_links=["gradio"]
-    )
+    # Gradio's footer links to an API page with no endpoints to list and a settings
+    # page whose theme switch reloads, which would discard the results.
+    demo.launch(max_file_size="1gb", css_paths=ASSETS / "app.css", footer_links=[])
 
 
 if __name__ == "__main__":
