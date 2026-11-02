@@ -7,7 +7,7 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = [
     "gradio>=6.31.0",
-    "hume-audio-decisions>=0.1.0",
+    "hume-audio-decisions>=0.2.0",
     "pydantic>=2.14.2",
 ]
 

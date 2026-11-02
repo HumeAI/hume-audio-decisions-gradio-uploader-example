@@ -515,7 +515,7 @@ wheels = [
 
 [[package]]
 name = "hume-audio-decisions"
-version = "0.1.0"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -525,9 +525,9 @@ dependencies = [
     { name = "pydantic-core" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/23/59/d98485c3c2ae69cab612e738381ab482322fb539cebea483234bd9178ae2/hume_audio_decisions-0.1.0.tar.gz", hash = "sha256:e7618ba517d3407c82269bcee9691502bf110be71d804a031ef46c75ff4964d0", size = 82949, upload-time = "2026-11-02T14:13:14.597Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/79/dee7610a793db34febaeb14e78d3b2ccc00bcf498565e0bad0d11c158860/hume_audio_decisions-0.2.0.tar.gz", hash = "sha256:5ab8dcef538746f34ff1bc75c6e98025e0098f7fc6a35bbcb942fac21d6cb938", size = 82830, upload-time = "2026-11-02T16:55:12.649Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/04/6e/86609f8727a5004ad50c71eb987526be54e510ab919284233225c6fc975a/hume_audio_decisions-0.1.0-py3-none-any.whl", hash = "sha256:f2dca9fbfeb42474745d336e939b9dce4c0f8c64a1dba27e62befb6acba78ed9", size = 109559, upload-time = "2026-11-02T14:13:13.208Z" },
+    { url = "https://files.pythonhosted.org/packages/35/b1/07fbe68cb59c4d4116fb5b821a155eb46747da0f20dc579c121e4d93d483/hume_audio_decisions-0.2.0-py3-none-any.whl", hash = "sha256:424e279925f63b824ac2577031cd1227163a458f25acb277dc59dea20b70b645", size = 109516, upload-time = "2026-11-02T16:55:11.235Z" },
 ]
 
 [[package]]
@@ -551,7 +551,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "gradio", specifier = ">=6.31.0" },
-    { name = "hume-audio-decisions", specifier = ">=0.1.0" },
+    { name = "hume-audio-decisions", specifier = ">=0.2.0" },
     { name = "pydantic", specifier = ">=2.14.2" },
 ]
 

@@ -30,7 +30,7 @@ DEFAULT_REQUEST = json.dumps(
                 "criteria": ["Very low", "Low", "Moderate", "High", "Very high"],
             },
             "laughter": {
-                "type": "moment",
+                "type": "span",
                 "instructions": "When does someone laugh?",
             },
         },
