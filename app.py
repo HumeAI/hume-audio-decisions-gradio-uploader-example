@@ -82,7 +82,10 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
         title=TITLE, delete_cache=(86400, 86400), fill_height=True, fill_width=True
     )
     with demo:
-        session = gr.State(Session, delete_callback=Session.close)
+        # A State whose value is a function gets a public load event that makes it,
+        # so a private load event makes the session instead.
+        session = gr.State(delete_callback=Session.close)
+        demo.load(Session, outputs=session, api_visibility="private")
 
         with gr.Sidebar(width=420):
             # The height matches the list of four files in assets/app.css, so adding
