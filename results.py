@@ -10,9 +10,9 @@ import httpx
 from hume_audio_decisions import (
     Answer,
     Answer_Choice,
-    Answer_Moment,
     Answer_Noul,
     Answer_Score,
+    Answer_Span,
     DecisionsRequest,
     Error,
 )
@@ -439,8 +439,8 @@ def _cell(answer: Answer, start_ms: int) -> str:
             return f"{answer.choice} {answer.probabilities[answer.choice]:.2f}"
         case Answer_Score():
             return f"{answer.score:.2f} of {len(answer.legend) - 1}"
-        case Answer_Moment():
-            times = (_clock(start_ms + m.audio_start_ms) for m in answer.moments)
+        case Answer_Span():
+            times = (_clock(start_ms + s.audio_start_ms) for s in answer.spans)
             return ", ".join(times) or "none"
         case _:
             assert_never(answer)

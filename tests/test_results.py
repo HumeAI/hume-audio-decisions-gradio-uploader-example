@@ -35,7 +35,7 @@ LONG_CALL = Path("long_call.wav")
 
 
 def response(
-    *, tokens: int = 1000, moments: tuple[int, ...] = (), run_id: str = "run"
+    *, tokens: int = 1000, spans: tuple[int, ...] = (), run_id: str = "run"
 ) -> DecisionsResponse:
     return DecisionsResponse.model_validate(
         {
@@ -67,14 +67,14 @@ def response(
                     },
                 },
                 "laughter": {
-                    "type": "moment",
-                    "moments": [
+                    "type": "span",
+                    "spans": [
                         {
                             "audio_start_ms": start,
                             "audio_end_ms": start + 1000,
                             "probability": 0.9,
                         }
-                        for start in moments
+                        for start in spans
                     ],
                 },
             },
@@ -101,13 +101,13 @@ def answered(
     end_ms: int,
     *,
     tokens: int = 1000,
-    moments: tuple[int, ...] = (),
+    spans: tuple[int, ...] = (),
 ) -> ChunkResult:
     return ChunkResult(
         index,
         start_ms,
         end_ms,
-        response=response(tokens=tokens, moments=moments, run_id=f"run-{index}"),
+        response=response(tokens=tokens, spans=spans, run_id=f"run-{index}"),
         error=None,
     )
 
@@ -148,7 +148,7 @@ def cells(results: Results) -> list[tuple[str, ...]]:
 
 def test_each_question_type_has_its_own_cell() -> None:
     results = started(LONG_CALL)
-    part = answered(1, 274_000, 548_000, moments=(88_140, 247_310))
+    part = answered(1, 274_000, 548_000, spans=(88_140, 247_310))
 
     send(results, LONG_CALL, part, finish=True)
 
@@ -181,21 +181,21 @@ def test_each_question_type_has_its_own_cell() -> None:
 
 
 @pytest.mark.parametrize(
-    ("start_ms", "moments", "cell"),
+    ("start_ms", "spans", "cell"),
     [
-        pytest.param(0, (), "none", id="no moments"),
+        pytest.param(0, (), "none", id="no spans"),
         pytest.param(3_540_000, (61_000,), "1:00:01", id="past an hour"),
     ],
 )
-def test_a_moment_cell_gives_times_in_the_whole_recording(
-    start_ms: int, moments: tuple[int, ...], cell: str
+def test_a_span_cell_gives_times_in_the_whole_recording(
+    start_ms: int, spans: tuple[int, ...], cell: str
 ) -> None:
     results = started(LONG_CALL)
 
     send(
         results,
         LONG_CALL,
-        answered(0, start_ms, start_ms + 120_000, moments=moments),
+        answered(0, start_ms, start_ms + 120_000, spans=spans),
         finish=True,
     )
 
@@ -481,7 +481,7 @@ def test_the_downloads_hold_the_table_and_every_response_and_error(
     send(
         results,
         LONG_CALL,
-        answered(0, 0, 274_000, moments=(1_000,)),
+        answered(0, 0, 274_000, spans=(1_000,)),
         failed(1, 274_000, 548_000, error),
         finish=False,
     )
@@ -504,7 +504,7 @@ def test_the_downloads_hold_the_table_and_every_response_and_error(
                 "start_ms": 0,
                 "end_ms": 274_000,
                 "run_id": "run-0",
-                "response": response(moments=(1_000,), run_id="run-0").model_dump(
+                "response": response(spans=(1_000,), run_id="run-0").model_dump(
                     mode="json"
                 ),
             },
