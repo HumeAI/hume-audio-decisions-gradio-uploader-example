@@ -173,6 +173,8 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
                 table,
                 estimate_button,
                 clear_button,
+                csv_button,
+                json_button,
                 heading,
                 audio,
                 response,
@@ -276,7 +278,12 @@ def _asset(name: str) -> str:
 def _set_recordings(page: Page, paths: list[str] | None, session: Session) -> Updates:
     recordings = [Path(path) for path in paths or []]
     session.results.set_recordings(recordings)
-    updates = {**_status_and_table(page, session), **_idle_buttons(page, session)}
+    # Removing a recording drops its answers, so the downloads are written again.
+    updates = {
+        **_status_and_table(page, session),
+        **_idle_buttons(page, session),
+        **_downloads(page, session),
+    }
     if session.selected is not None and session.selected[0] not in recordings:
         updates |= _deselect(page, session)
     return updates
@@ -323,13 +330,10 @@ async def _run(
     finally:
         results.end_run()
 
-    csv_path, json_path = await asyncio.to_thread(
-        results.write_downloads, session.downloads
-    )
+    downloads = await asyncio.to_thread(_downloads, page, session)
     yield {
         **_unlocked(page, session),
-        page.csv_button: gr.DownloadButton(value=csv_path, interactive=True),
-        page.json_button: gr.DownloadButton(value=json_path, interactive=True),
+        **downloads,
         **_status_and_table(page, session),
     }
 
@@ -378,8 +382,7 @@ def _clear(page: Page, session: Session) -> Updates:
     return {
         **_status_and_table(page, session),
         **_idle_buttons(page, session),
-        page.csv_button: gr.DownloadButton(value=None, interactive=False),
-        page.json_button: gr.DownloadButton(value=None, interactive=False),
+        **_downloads(page, session),
         **_deselect(page, session),
     }
 
@@ -447,6 +450,19 @@ def _idle_buttons(page: Page, session: Session) -> Updates:
     }
 
 
+def _downloads(page: Page, session: Session) -> Updates:
+    if not session.results.can_clear():
+        return {
+            page.csv_button: gr.DownloadButton(value=None, interactive=False),
+            page.json_button: gr.DownloadButton(value=None, interactive=False),
+        }
+    csv_path, json_path = session.results.write_downloads(session.downloads)
+    return {
+        page.csv_button: gr.DownloadButton(value=csv_path, interactive=True),
+        page.json_button: gr.DownloadButton(value=json_path, interactive=True),
+    }
+
+
 def _status_and_table(page: Page, session: Session) -> Updates:
     return {
         page.status: session.results.status(),
@@ -492,9 +508,16 @@ def _styles(session: Session, row: Row, numeric: list[bool]) -> list[str]:
 
 def main() -> None:
     # Every tab shares the organization's rate limit, so the whole process shares
-    # one client and its pacer.
+    # one client and its pacer. Gradio otherwise runs each event for one tab at a
+    # time, so a second tab's run would wait for the first tab's to end.
     client = make_client()
-    build(client).launch(max_file_size="1gb", css_paths=ASSETS / "app.css")
+    demo = build(client)
+    demo.queue(default_concurrency_limit=None)
+    # The app has no endpoints for the API page to list, and Gradio's settings page
+    # switches the theme by reloading, which would discard the results.
+    demo.launch(
+        max_file_size="1gb", css_paths=ASSETS / "app.css", footer_links=["gradio"]
+    )
 
 
 if __name__ == "__main__":
