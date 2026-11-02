@@ -1,5 +1,6 @@
 import csv
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -15,7 +16,16 @@ from hume_audio_decisions import (
 )
 from hume_audio_decisions.audio_helpers import ChunkResult
 
-from evaluation import BatchStopped, Finished, PartResult, Started, Stretch, Unreadable
+from evaluation import (
+    BatchStopped,
+    Estimated,
+    Finished,
+    PartResult,
+    Started,
+    Stretch,
+    TooShort,
+    Unreadable,
+)
 from questions import DEFAULT_REQUEST, parse_request
 from results import Results
 
@@ -552,3 +562,103 @@ def test_an_mp3_part_is_cut_again_from_where_the_part_before_it_ended() -> None:
         Stretch(recording, 0, 274_000),
         Stretch(recording, 274_000, 548_000),
     ]
+
+
+def test_estimates_are_offered_until_the_first_answer() -> None:
+    results = Results()
+    assert not results.can_estimate()
+
+    results.set_recordings([CALL, LONG_CALL])
+    assert results.can_estimate()
+
+    results.start_run(REQUEST)
+    send(results, CALL, answered(0, 0, 60_000), finish=True)
+    results.end_run()
+    assert not results.can_estimate()
+
+    results.clear()
+    assert results.can_estimate()
+
+
+def test_no_estimate_is_offered_when_the_next_run_would_send_nothing() -> None:
+    results = started(CALL, LONG_CALL)
+    results.record(Started(Stretch(CALL, 0)))
+    results.record(Unreadable(Stretch(CALL, 0), ValueError("The audio is empty.")))
+    results.end_run()
+    assert results.can_estimate()
+
+    results.set_recordings([CALL])
+
+    assert not results.can_estimate()
+
+
+def test_an_estimate_covers_only_what_the_next_run_would_send() -> None:
+    results = started(LONG_CALL, CALL)
+    results.record(Started(Stretch(CALL, 0)))
+    results.record(Unreadable(Stretch(CALL, 0), ValueError("The audio is empty.")))
+    results.end_run()
+    table = cells(results)
+
+    stretches = results.start_estimate(REQUEST)
+
+    assert stretches == [Stretch(LONG_CALL, 0)]
+    assert cells(results) == table
+
+
+def test_the_estimate_has_a_status_of_its_own() -> None:
+    notes = Path("notes.wav")
+    results = started(LONG_CALL, CALL, notes)
+    status = results.status()
+    results.start_estimate(REQUEST)
+
+    results.record_estimate(Estimated(Stretch(LONG_CALL), 274_000, 1_200))
+    assert results.estimate_status() == (
+        "Estimating the next run: 1,200 input tokens over 1 part so far."
+    )
+
+    results.record_estimate(Estimated(Stretch(LONG_CALL), 274_000, 1_100))
+    results.record_estimate(TooShort(Stretch(CALL), 3_000))
+    results.record_estimate(Unreadable(Stretch(notes), ValueError("Not audio.")))
+    results.finish_estimate()
+
+    assert results.estimate_status() == (
+        "The next run is estimated at 2,300 input tokens over 2 parts. "
+        "1 part too short to send, 1 file unreadable."
+    )
+    assert results.status() == status
+    assert [row[2] for row in cells(results)] == ["Waiting"] * 3
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param(lambda results: results.set_recordings([CALL]), id="recordings"),
+        pytest.param(lambda results: results.clear_estimate(), id="request"),
+        pytest.param(lambda results: results.start_run(REQUEST), id="run"),
+        pytest.param(lambda results: results.clear(), id="clear"),
+    ],
+)
+def test_a_change_removes_the_estimate(change: Callable[[Results], object]) -> None:
+    results = started(CALL)
+    results.start_estimate(REQUEST)
+    results.record_estimate(Estimated(Stretch(CALL), 60_000, 1_000))
+    results.finish_estimate()
+    assert results.estimate_status().startswith("The next run is estimated")
+
+    change(results)
+
+    assert results.estimate_status() == ""
+
+
+def test_an_error_ends_the_estimate_with_its_reason() -> None:
+    results = started(CALL, LONG_CALL)
+    status = results.status()
+    results.start_estimate(REQUEST)
+    results.record_estimate(Estimated(Stretch(CALL), 60_000, 1_000))
+
+    results.record_estimate(BatchStopped(httpx.ReadTimeout("timed out")))
+    results.record_estimate(Estimated(Stretch(LONG_CALL), 60_000, 1_000))
+    results.finish_estimate()
+
+    assert results.estimate_status() == "Estimating stopped by a timeout."
+    assert results.status() == status

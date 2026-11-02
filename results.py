@@ -22,11 +22,14 @@ from pydantic import BaseModel
 
 from evaluation import (
     BatchStopped,
+    Estimated,
+    EstimateProgress,
     Finished,
     PartResult,
     Progress,
     Started,
     Stretch,
+    TooShort,
     Unreadable,
     is_api_error,
 )
@@ -76,16 +79,28 @@ class _Recording:
     sending_from: int | None = None
 
 
+@dataclass
+class _Estimate:
+    tokens: int = 0
+    parts: int = 0
+    too_short: int = 0
+    unreadable: int = 0
+    finished: bool = False
+    error: ApiError | httpx.HTTPError | None = None
+
+
 class Results:
     def __init__(self) -> None:
         self._request: DecisionsRequest | None = None
         self._recordings: dict[Path, _Recording] = {}
-        self._stopped_by: ApiError | None = None
+        self._stopped_by: ApiError | httpx.HTTPError | None = None
+        self._estimate: _Estimate | None = None
 
     def set_recordings(self, paths: Iterable[Path]) -> None:
         self._recordings = {
             path: self._recordings.get(path, _Recording()) for path in paths
         }
+        self._estimate = None
 
     def check_request(self, request: DecisionsRequest) -> None:
         if self._has_answers() and not _same(request, self._request):
@@ -95,16 +110,13 @@ class Results:
             )
 
     def start_run(self, request: DecisionsRequest) -> list[Stretch]:
-        self.check_request(request)
+        stretches = self._unsent(request)
         if not _same(request, self._request):
             self._clear_parts()
             self._request = request
         self._stopped_by = None
-        return [
-            Stretch(path, start_ms)
-            for path, recording in self._recordings.items()
-            if (start_ms := _resend_from(recording)) is not None
-        ]
+        self._estimate = None
+        return stretches
 
     def record(self, progress: Progress) -> None:
         match progress:
@@ -137,9 +149,46 @@ class Results:
         for recording in self._recordings.values():
             recording.sending_from = None
 
+    def can_estimate(self) -> bool:
+        return not self._has_answers() and any(
+            _resend_from(recording) is not None
+            for recording in self._recordings.values()
+        )
+
+    def start_estimate(self, request: DecisionsRequest) -> list[Stretch]:
+        stretches = self._unsent(request)
+        self._estimate = _Estimate()
+        return stretches
+
+    def record_estimate(self, progress: EstimateProgress) -> None:
+        estimate = self._estimate
+        # An error ends the estimate, so updates queued behind the error are dropped.
+        if estimate is None or estimate.error is not None:
+            return
+        match progress:
+            case Estimated(tokens=tokens):
+                estimate.tokens += tokens
+                estimate.parts += 1
+            case TooShort():
+                estimate.too_short += 1
+            case Unreadable():
+                estimate.unreadable += 1
+            case BatchStopped(error):
+                estimate.error = error
+            case _:
+                assert_never(progress)
+
+    def finish_estimate(self) -> None:
+        if self._estimate is not None:
+            self._estimate.finished = True
+
+    def clear_estimate(self) -> None:
+        self._estimate = None
+
     def clear(self) -> None:
         self._request = None
         self._stopped_by = None
+        self._estimate = None
         self._clear_parts()
 
     def has_results(self) -> bool:
@@ -178,8 +227,11 @@ class Results:
             f"{counts['waiting']} waiting. Total input tokens billed: {tokens:,}."
         )
         if self._stopped_by is not None:
-            line += f" {_stop_reason(self._stopped_by)}"
+            line += f" {_stop_reason('Sending', self._stopped_by)}"
         return line
+
+    def estimate_status(self) -> str:
+        return "" if self._estimate is None else _describe_estimate(self._estimate)
 
     def write_downloads(self, directory: Path) -> tuple[Path, Path]:
         csv_path = directory / "results.csv"
@@ -209,6 +261,17 @@ class Results:
 
     def _clear_parts(self) -> None:
         self._recordings = {path: _Recording() for path in self._recordings}
+
+    def _unsent(self, request: DecisionsRequest) -> list[Stretch]:
+        self.check_request(request)
+        # A different request starts every recording over.
+        if not _same(request, self._request):
+            return [Stretch(path) for path in self._recordings]
+        return [
+            Stretch(path, start_ms)
+            for path, recording in self._recordings.items()
+            if (start_ms := _resend_from(recording)) is not None
+        ]
 
     def _questions(self) -> list[str]:
         return [] if self._request is None else list(self._request.questions)
@@ -342,12 +405,34 @@ def _reason(error: Exception) -> str:
     return "connection error"
 
 
-def _stop_reason(error: ApiError) -> str:
+def _stop_reason(activity: str, error: ApiError | httpx.HTTPError) -> str:
+    if isinstance(error, httpx.HTTPError):
+        return f"{activity} stopped by a {_reason(error)}."
     if error.status_code == httpx.codes.UNAUTHORIZED:
-        return "Sending stopped because the API key was rejected."
+        return f"{activity} stopped because the API key was rejected."
     if isinstance(error.body, Error):
-        return f"Sending stopped: {error.body.message}"
-    return f"Sending stopped by a {error.status_code} error."
+        return f"{activity} stopped: {error.body.message}"
+    return f"{activity} stopped by a {error.status_code} error."
+
+
+def _describe_estimate(estimate: _Estimate) -> str:
+    # A total that leaves out the parts that weren't estimated would understate the run.
+    if estimate.error is not None:
+        return _stop_reason("Estimating", estimate.error)
+    total = f"{estimate.tokens:,} input tokens over {_count(estimate.parts, 'part')}"
+    if not estimate.finished:
+        return f"Estimating the next run: {total} so far."
+    notes = []
+    if estimate.too_short:
+        notes.append(f"{_count(estimate.too_short, 'part')} too short to send")
+    if estimate.unreadable:
+        notes.append(f"{_count(estimate.unreadable, 'file')} unreadable")
+    line = f"The next run is estimated at {total}."
+    return f"{line} {', '.join(notes)}." if notes else line
+
+
+def _count(count: int, noun: str) -> str:
+    return f"{count:,} {noun}" if count == 1 else f"{count:,} {noun}s"
 
 
 def _cell(answer: Answer, start_ms: int) -> str:

@@ -11,7 +11,7 @@ import gradio as gr
 from gradio.components import Component
 from hume_audio_decisions import AsyncDecisionsClient
 
-from evaluation import Stretch, cut, evaluate, make_client
+from evaluation import Stretch, cut, estimate, evaluate, make_client
 from questions import DEFAULT_REQUEST, parse_request
 from results import COLUMNS, Results, Row
 
@@ -25,6 +25,9 @@ INTRODUCTION = (
 NO_SELECTION = (
     "### Selected part\n\nSelect a row to hear its part and see its response."
 )
+# An empty Markdown line collapses, but one holding a non-breaking space keeps its
+# height.
+BLANK_LINE = "&nbsp;"
 # Theme variables, so the styles follow the light and dark themes.
 SELECTED_STYLE = (
     "background-color: var(--color-accent-soft); "
@@ -60,8 +63,10 @@ class Page:
     editor: gr.Code
     run_button: gr.Button
     stop_button: gr.Button
+    estimate_button: gr.Button
     clear_button: gr.Button
     status: gr.Markdown
+    estimate_status: gr.Markdown
     csv_button: gr.DownloadButton
     json_button: gr.DownloadButton
     table: gr.Dataframe
@@ -94,10 +99,12 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
                 wrap_lines=True,
                 elem_id="request",
             )
-            # Stop takes Run's place during a run, because a button ignores clicks
-            # while the event it started is still going.
-            run_button = gr.Button("Run", variant="primary")
-            stop_button = gr.Button("Stop", variant="stop", visible=False)
+            # Stop takes Run's place during a run or an estimate, because a button
+            # ignores clicks while the event it started is still going.
+            with gr.Row():
+                run_button = gr.Button("Run", variant="primary")
+                stop_button = gr.Button("Stop", variant="stop", visible=False)
+                estimate_button = gr.Button("Estimate tokens", interactive=False)
             clear_button = gr.Button("Clear results", interactive=False)
 
         with gr.Row():
@@ -117,13 +124,16 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
             json_button = gr.DownloadButton(
                 "Download JSON", size="sm", scale=0, interactive=False
             )
+        # The estimate gets a line of its own across the page, kept while empty, so
+        # showing one doesn't move the table.
+        estimate_status = gr.Markdown(BLANK_LINE)
         table = gr.Dataframe(
             headers=list(COLUMNS),
             label="Results",
             interactive=False,
             show_row_numbers=True,
             show_search="search",
-            max_height=410,
+            max_height=372,
             scale=1,
         )
         with gr.Row(equal_height=True):
@@ -137,8 +147,10 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
             editor=editor,
             run_button=run_button,
             stop_button=stop_button,
+            estimate_button=estimate_button,
             clear_button=clear_button,
             status=status,
+            estimate_status=estimate_status,
             csv_button=csv_button,
             json_button=json_button,
             table=table,
@@ -149,7 +161,15 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
         recordings.change(
             partial(_set_recordings, page),
             inputs=[recordings, session],
-            outputs=[status, table, heading, audio, response],
+            outputs=[
+                status,
+                estimate_status,
+                table,
+                estimate_button,
+                heading,
+                audio,
+                response,
+            ],
             show_progress="hidden",
             api_visibility="private",
         )
@@ -163,16 +183,41 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
                 editor,
                 run_button,
                 stop_button,
+                estimate_button,
                 clear_button,
                 csv_button,
                 json_button,
                 status,
+                estimate_status,
                 table,
                 heading,
                 audio,
                 response,
             ],
             validator=_check,
+            show_progress="hidden",
+            api_visibility="private",
+        )
+        estimate_button.click(
+            partial(_estimate, client, page),
+            inputs=[recordings, editor, session],
+            outputs=[
+                recordings,
+                editor,
+                run_button,
+                stop_button,
+                estimate_button,
+                clear_button,
+                estimate_status,
+            ],
+            validator=_check,
+            show_progress="hidden",
+            api_visibility="private",
+        )
+        editor.input(
+            _clear_estimate,
+            inputs=session,
+            outputs=estimate_status,
             show_progress="hidden",
             api_visibility="private",
         )
@@ -188,7 +233,9 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
             inputs=session,
             outputs=[
                 status,
+                estimate_status,
                 table,
+                estimate_button,
                 clear_button,
                 csv_button,
                 json_button,
@@ -216,11 +263,14 @@ def _asset(name: str) -> str:
 def _set_recordings(page: Page, paths: list[str] | None, session: Session) -> Updates:
     recordings = [Path(path) for path in paths or []]
     session.results.set_recordings(recordings)
-    updates: Updates = {}
+    updates: Updates = {
+        **_status_and_table(page, session),
+        page.estimate_button: gr.Button(interactive=session.results.can_estimate()),
+    }
     if session.selected is not None and session.selected[0] not in recordings:
         session.selected = None
-        updates = _no_selection(page)
-    return _status_and_table(page, session) | updates
+        updates |= _no_selection(page)
+    return updates
 
 
 def _check(paths: list[str] | None, text: str, session: Session) -> tuple[Any, ...]:
@@ -250,11 +300,7 @@ async def _run(
     session.chose_row = False
 
     yield {
-        page.recordings: gr.File(interactive=False),
-        page.editor: gr.Code(interactive=False),
-        page.run_button: gr.Button(visible=False),
-        page.stop_button: gr.Button("Stop", interactive=True, visible=True),
-        page.clear_button: gr.Button(interactive=False),
+        **_locked(page),
         page.csv_button: gr.DownloadButton(interactive=False),
         page.json_button: gr.DownloadButton(interactive=False),
         **_status_and_table(page, session),
@@ -270,11 +316,7 @@ async def _run(
         results.write_downloads, session.downloads
     )
     yield {
-        page.recordings: gr.File(interactive=True),
-        page.editor: gr.Code(interactive=True),
-        page.run_button: gr.Button(visible=True),
-        page.stop_button: gr.Button(visible=False),
-        page.clear_button: gr.Button(interactive=results.has_results()),
+        **_unlocked(page, session),
         page.csv_button: gr.DownloadButton(value=csv_path, interactive=True),
         page.json_button: gr.DownloadButton(value=json_path, interactive=True),
         **_status_and_table(page, session),
@@ -293,6 +335,34 @@ async def _run(
             }
 
 
+async def _estimate(
+    client: AsyncDecisionsClient,
+    page: Page,
+    _paths: list[str] | None,
+    text: str,
+    session: Session,
+) -> AsyncIterator[Updates]:
+    request = parse_request(text)
+    results = session.results
+    stretches = results.start_estimate(request)
+    session.stop = asyncio.Event()
+
+    yield {**_locked(page), page.estimate_status: _estimate_line(session)}
+    async for progress in estimate(client, request, stretches, session.stop):
+        results.record_estimate(progress)
+        yield {page.estimate_status: _estimate_line(session)}
+    if session.stop.is_set():
+        results.clear_estimate()
+    else:
+        results.finish_estimate()
+    yield {**_unlocked(page, session), page.estimate_status: _estimate_line(session)}
+
+
+def _clear_estimate(session: Session) -> str:
+    session.results.clear_estimate()
+    return _estimate_line(session)
+
+
 # Gradio runs plain functions in worker threads, and an asyncio.Event must be set
 # on its own event loop.
 async def _stop(session: Session) -> gr.Button:
@@ -305,6 +375,7 @@ def _clear(page: Page, session: Session) -> Updates:
     session.selected = None
     return {
         **_status_and_table(page, session),
+        page.estimate_button: gr.Button(interactive=session.results.can_estimate()),
         page.clear_button: gr.Button(interactive=False),
         page.csv_button: gr.DownloadButton(value=None, interactive=False),
         page.json_button: gr.DownloadButton(value=None, interactive=False),
@@ -351,8 +422,38 @@ def _write_clip(stretch: Stretch, directory: Path) -> Path:
     return path
 
 
+def _locked(page: Page) -> Updates:
+    return {
+        page.recordings: gr.File(interactive=False),
+        page.editor: gr.Code(interactive=False),
+        page.run_button: gr.Button(visible=False),
+        page.stop_button: gr.Button("Stop", interactive=True, visible=True),
+        page.estimate_button: gr.Button(interactive=False),
+        page.clear_button: gr.Button(interactive=False),
+    }
+
+
+def _unlocked(page: Page, session: Session) -> Updates:
+    return {
+        page.recordings: gr.File(interactive=True),
+        page.editor: gr.Code(interactive=True),
+        page.run_button: gr.Button(visible=True),
+        page.stop_button: gr.Button(visible=False),
+        page.estimate_button: gr.Button(interactive=session.results.can_estimate()),
+        page.clear_button: gr.Button(interactive=session.results.has_results()),
+    }
+
+
 def _status_and_table(page: Page, session: Session) -> Updates:
-    return {page.status: session.results.status(), page.table: _table(session)}
+    return {
+        page.status: session.results.status(),
+        page.estimate_status: _estimate_line(session),
+        page.table: _table(session),
+    }
+
+
+def _estimate_line(session: Session) -> str:
+    return session.results.estimate_status() or BLANK_LINE
 
 
 def _no_selection(page: Page) -> Updates:
