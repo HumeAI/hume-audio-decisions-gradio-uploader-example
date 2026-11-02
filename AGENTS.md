@@ -10,12 +10,11 @@ Before writing code that calls the Audio Decisions API, read https://dev.hume.ai
 
 ## Rules
 
-1. The `hume-audio-decisions` SDK installs in editable mode from a clone of https://github.com/HumeAI/hume-decisions-python-sdk next to this repository, as set in `[tool.uv.sources]`. CI has no such clone, so its `uv sync` step fails.
-2. `requirements.txt` is exported from `uv.lock` for pip users, and CI fails when the two differ. After any change to `uv.lock`, run:
+1. `requirements.txt` is exported from `uv.lock` for pip users, and CI fails when the two differ. After any change to `uv.lock`, run:
 
    ```bash
    uv export --format requirements-txt --no-dev --no-hashes --output-file requirements.txt
    ```
 
-3. Fix the code rather than adding `# type: ignore`, `# noqa`, or exceptions to the ruff or mypy configuration.
-4. The API key stays on the server. Never send it to the browser or write it into the repository.
+2. Fix the code rather than adding `# type: ignore`, `# noqa`, or exceptions to the ruff or mypy configuration.
+3. The API key stays on the server. Never send it to the browser or write it into the repository.
