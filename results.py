@@ -31,22 +31,10 @@ from evaluation import (
     Stretch,
     TooShort,
     Unreadable,
-    is_api_error,
+    is_file_error,
 )
 
 COLUMNS = ("Recording", "Part", "Status", "Tokens")
-
-# These errors come from the file itself, so sending it again unchanged would fail
-# the same way.
-_FILE_ERROR_STATUSES = frozenset({413, 415})
-_FILE_ERROR_CODES = frozenset(
-    {
-        "audio_decode_failed",
-        "audio_format_unsupported",
-        "audio_too_short",
-        "audio_too_long",
-    }
-)
 
 _RecordingState: TypeAlias = Literal["answered", "failed", "sending", "waiting"]
 
@@ -59,6 +47,15 @@ class Row:
     error: Exception | None = None
     # The stretch to cut to get exactly the audio sent for the part.
     audio: Stretch | None = None
+
+    @property
+    def key(self) -> tuple[Path, int | None]:
+        return self.recording, None if self.part is None else self.part.start_ms
+
+    @property
+    def title(self) -> str:
+        name, span, *_ = self.cells
+        return f"{name}, {span}" if span else name
 
     @property
     def failed(self) -> bool:
@@ -178,8 +175,10 @@ class Results:
             case _:
                 assert_never(progress)
 
-    def finish_estimate(self) -> None:
-        if self._estimate is not None:
+    def end_estimate(self, *, stopped: bool) -> None:
+        if stopped:
+            self._estimate = None
+        elif self._estimate is not None:
             self._estimate.finished = True
 
     def clear_estimate(self) -> None:
@@ -191,7 +190,7 @@ class Results:
         self._estimate = None
         self._clear_parts()
 
-    def has_results(self) -> bool:
+    def can_clear(self) -> bool:
         return self._request is not None
 
     def headers(self) -> list[str]:
@@ -264,7 +263,6 @@ class Results:
 
     def _unsent(self, request: DecisionsRequest) -> list[Stretch]:
         self.check_request(request)
-        # A different request starts every recording over.
         if not _same(request, self._request):
             return [Stretch(path) for path in self._recordings]
         return [
@@ -293,7 +291,7 @@ class Results:
             status, span = "Failed: unreadable file", ""
         elif recording.sending_from is not None:
             status, span = "Sending", f"from {_clock(recording.sending_from)}"
-        elif recording.finished or (last is not None and _resent(last)):
+        elif recording.finished or (last is not None and _will_resend(last)):
             # A failure that can pass is sent again with the rest of the recording,
             # so its row already stands for what is left.
             return
@@ -352,7 +350,7 @@ def _resend_from(recording: _Recording) -> int | None:
         return None
     start_ms = 0
     for part in recording.parts:
-        if _resent(part):
+        if _will_resend(part):
             return start_ms
         if part.status == "not_attempted":
             return None
@@ -362,10 +360,8 @@ def _resend_from(recording: _Recording) -> int | None:
     return None if recording.finished else start_ms
 
 
-def _resent(part: ChunkResult) -> bool:
-    return part.error is not None and not is_api_error(
-        part.error, _FILE_ERROR_STATUSES, _FILE_ERROR_CODES
-    )
+def _will_resend(part: ChunkResult) -> bool:
+    return part.error is not None and not is_file_error(part.error)
 
 
 def _part_cells(part: ChunkResult, questions: list[str]) -> list[str]:

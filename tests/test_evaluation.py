@@ -37,6 +37,8 @@ REQUEST = DecisionsRequest(
 )
 SAMPLE_RATE = 8000
 FAST = 600_000
+# Requests 100 ms apart leave time for the first error to stop the rest.
+PACED = 600
 
 Handler = Callable[[httpx.Request], Coroutine[None, None, httpx.Response]]
 
@@ -97,6 +99,16 @@ def sent_audio(request: httpx.Request) -> bytes:
         if b'filename="' in headers:
             return body.removesuffix(b"\r\n")
     raise AssertionError("The request has no file.")
+
+
+def capture(reply: Callable[[], httpx.Response]) -> tuple[Handler, list[httpx.Request]]:
+    requests: list[httpx.Request] = []
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return reply()
+
+    return handle, requests
 
 
 def mock_client(handler: Handler, requests_per_minute: float) -> AsyncDecisionsClient:
@@ -226,14 +238,9 @@ async def test_an_error_every_recording_would_hit_stops_the_batch(
         write_wav(tmp_path / f"{index}.wav", 5_000)
         for index in range(CONCURRENT_RECORDINGS + 2)
     ]
-    requests: list[httpx.Request] = []
+    handle, requests = capture(lambda: response)
 
-    async def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return response
-
-    # Requests 100 ms apart leave time for the first error to stop the rest.
-    progress = await collect(handle, stretches, requests_per_minute=600)
+    progress = await collect(handle, stretches, requests_per_minute=PACED)
 
     started = [update.stretch for update in progress if isinstance(update, Started)]
     assert started == stretches[:CONCURRENT_RECORDINGS]
@@ -269,11 +276,7 @@ async def test_a_file_the_sdk_cannot_split_fails_without_a_request(
     unreadable = Stretch(tmp_path / "notes.wav")
     unreadable.path.write_bytes(b"These are notes, not audio.")
     good = write_wav(tmp_path / "good.wav", 5_000)
-    requests: list[httpx.Request] = []
-
-    async def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return answered()
+    handle, requests = capture(answered)
 
     progress = await collect(handle, [unreadable, good])
 
@@ -333,24 +336,22 @@ async def test_requests_are_paced_including_retries(tmp_path: Path) -> None:
             )
         return answered()
 
-    progress = await collect(handle, stretches, requests_per_minute=600)
+    progress = await collect(handle, stretches, requests_per_minute=PACED)
 
     assert len(sent_at) == CONCURRENT_RECORDINGS + 1
     gaps = [later - earlier for earlier, later in itertools.pairwise(sent_at)]
     # The transport sees each request a little after the pacer lets it go, by an
     # amount that varies from request to request.
-    assert min(gaps) >= 0.1 - 0.01
+    assert min(gaps) >= 60 / PACED - 0.01
     for stretch in stretches:
         assert [p.part.status for p in parts(progress, stretch)] == ["succeeded"]
 
 
 async def test_a_server_error_is_retried_before_its_part_fails(tmp_path: Path) -> None:
     stretch = write_wav(tmp_path / "call.wav", 5_000)
-    requests: list[httpx.Request] = []
-
-    async def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return failed(503, "server_busy", headers={"retry-after-ms": "1"})
+    handle, requests = capture(
+        lambda: failed(503, "server_busy", headers={"retry-after-ms": "1"})
+    )
 
     progress = await collect(handle, [stretch])
 
@@ -360,11 +361,7 @@ async def test_a_server_error_is_retried_before_its_part_fails(tmp_path: Path) -
 
 async def test_estimates_each_part_of_a_long_recording(tmp_path: Path) -> None:
     stretch = write_wav(tmp_path / "long_call.wav", 822_000)
-    requests: list[httpx.Request] = []
-
-    async def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return estimated(900)
+    handle, requests = capture(lambda: estimated(900))
 
     progress = await collect_estimates(handle, [stretch])
 
@@ -378,11 +375,7 @@ async def test_estimates_each_part_of_a_long_recording(tmp_path: Path) -> None:
 async def test_estimates_only_the_stretch_it_is_given(tmp_path: Path) -> None:
     recording = write_wav(tmp_path / "long_call.wav", 822_000)
     stretch = Stretch(recording.path, start_ms=274_000)
-    requests: list[httpx.Request] = []
-
-    async def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return estimated()
+    handle, requests = capture(estimated)
 
     await collect_estimates(handle, [stretch])
 
@@ -393,11 +386,7 @@ async def test_a_part_too_short_to_send_is_counted_without_a_request(
     tmp_path: Path,
 ) -> None:
     stretch = write_wav(tmp_path / "short.wav", 3_000)
-    requests: list[httpx.Request] = []
-
-    async def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return estimated()
+    handle, requests = capture(estimated)
 
     progress = await collect_estimates(handle, [stretch])
 
@@ -410,11 +399,7 @@ async def test_an_unreadable_file_is_counted_without_a_request(
 ) -> None:
     unreadable = Stretch(tmp_path / "notes.wav")
     unreadable.path.write_bytes(b"These are notes, not audio.")
-    requests: list[httpx.Request] = []
-
-    async def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return estimated()
+    handle, requests = capture(estimated)
 
     (failure,) = await collect_estimates(handle, [unreadable])
 
@@ -428,14 +413,11 @@ async def test_a_rejected_key_stops_the_estimate(tmp_path: Path) -> None:
         write_wav(tmp_path / f"{index}.wav", 5_000)
         for index in range(CONCURRENT_RECORDINGS + 2)
     ]
-    requests: list[httpx.Request] = []
+    handle, requests = capture(
+        lambda: httpx.Response(401, json={"message": "Invalid API key"})
+    )
 
-    async def handle(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(401, json={"message": "Invalid API key"})
-
-    # Requests 100 ms apart leave time for the first error to stop the rest.
-    (stopped,) = await collect_estimates(handle, stretches, requests_per_minute=600)
+    (stopped,) = await collect_estimates(handle, stretches, requests_per_minute=PACED)
 
     assert len(requests) == 1
     assert isinstance(stopped, BatchStopped)
@@ -449,7 +431,7 @@ async def test_a_timeout_stops_the_estimate(tmp_path: Path) -> None:
     async def handle(_request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("timed out")
 
-    (stopped,) = await collect_estimates(handle, stretches, requests_per_minute=600)
+    (stopped,) = await collect_estimates(handle, stretches, requests_per_minute=PACED)
 
     assert isinstance(stopped, BatchStopped)
     assert isinstance(stopped.error, httpx.ReadTimeout)

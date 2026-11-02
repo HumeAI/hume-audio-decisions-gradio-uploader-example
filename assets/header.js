@@ -1,10 +1,11 @@
 // Gradio's dark theme follows the `dark` class on the body. Gradio's own theme
 // setting reloads the page, which would discard the session's results.
 const STORAGE_KEY = "audio-decisions-gradio-uploader:theme";
+const button = element.querySelector("button");
 
 function showThemeIcon() {
   const dark = document.body.classList.contains("dark");
-  element.querySelector("button").setAttribute("aria-pressed", String(dark));
+  button.setAttribute("aria-pressed", String(dark));
   element.querySelector(".light-icon").hidden = dark;
   element.querySelector(".dark-icon").hidden = !dark;
 }
@@ -14,7 +15,9 @@ try {
   if (saved) {
     document.body.classList.toggle("dark", saved === "dark");
   }
-} catch {}
+} catch {
+  // Without storage the page follows the system theme.
+}
 showThemeIcon();
 
 // Gradio also switches the class when the system theme changes.
@@ -23,7 +26,7 @@ new MutationObserver(showThemeIcon).observe(document.body, {
   attributeFilter: ["class"],
 });
 
-element.querySelector("button").addEventListener("click", () => {
+button.addEventListener("click", () => {
   const dark = document.body.classList.toggle("dark");
   try {
     localStorage.setItem(STORAGE_KEY, dark ? "dark" : "light");

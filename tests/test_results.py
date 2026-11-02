@@ -128,12 +128,18 @@ def started(*paths: Path, request: DecisionsRequest = REQUEST) -> Results:
 
 
 def send(results: Results, path: Path, *parts: ChunkResult, finish: bool) -> None:
-    stretch = Stretch(path, 0)
+    stretch = Stretch(path)
     results.record(Started(stretch))
     for part in parts:
         results.record(PartResult(stretch, part))
     if finish:
         results.record(Finished(stretch))
+
+
+def unreadable(results: Results, path: Path) -> None:
+    stretch = Stretch(path)
+    results.record(Started(stretch))
+    results.record(Unreadable(stretch, ValueError("The audio is empty.")))
 
 
 def cells(results: Results) -> list[tuple[str, ...]]:
@@ -225,16 +231,14 @@ def test_a_failed_row_names_the_reason_and_bills_nothing(
 
 def test_rows_follow_a_recording_through_a_run() -> None:
     results = started(LONG_CALL, CALL)
-    stretch = Stretch(LONG_CALL, 0)
     waiting = [
         ("long_call.wav", "", "Waiting"),
         ("call.wav", "", "Waiting"),
     ]
     assert [row[:3] for row in cells(results)] == waiting
 
-    results.record(Started(stretch))
-    results.record(PartResult(stretch, answered(0, 0, 274_000)))
-    results.record(Unreadable(Stretch(CALL, 0), ValueError("The audio is empty.")))
+    send(results, LONG_CALL, answered(0, 0, 274_000), finish=False)
+    unreadable(results, CALL)
 
     assert [row[:3] for row in cells(results)] == [
         ("long_call.wav", "0:00 to 4:34", "Answered"),
@@ -282,13 +286,13 @@ def test_the_status_line_asks_for_recordings_when_there_are_none() -> None:
 def test_there_are_results_to_clear_from_the_start_of_a_run() -> None:
     results = Results()
     results.set_recordings([CALL])
-    assert not results.has_results()
+    assert not results.can_clear()
 
     results.start_run(REQUEST)
-    assert results.has_results()
+    assert results.can_clear()
 
     results.clear()
-    assert not results.has_results()
+    assert not results.can_clear()
 
 
 def test_the_status_line_says_why_the_batch_stopped() -> None:
@@ -317,7 +321,7 @@ def test_a_stopped_recording_resumes_where_it_stopped() -> None:
         ("long_call.wav", "from 4:34", "Waiting"),
         ("call.wav", "", "Waiting"),
     ]
-    assert results.start_run(REQUEST) == [Stretch(LONG_CALL, 274_000), Stretch(CALL, 0)]
+    assert results.start_run(REQUEST) == [Stretch(LONG_CALL, 274_000), Stretch(CALL)]
 
 
 def test_a_failure_that_can_pass_is_sent_again_with_the_rest() -> None:
@@ -383,8 +387,7 @@ def test_an_error_that_would_repeat_is_not_sent_again(
 
 def test_an_unreadable_file_is_not_sent_again() -> None:
     results = started(CALL)
-    results.record(Started(Stretch(CALL, 0)))
-    results.record(Unreadable(Stretch(CALL, 0), ValueError("The audio is empty.")))
+    unreadable(results, CALL)
 
     assert results.start_run(REQUEST) == []
 
@@ -422,7 +425,7 @@ def test_a_changed_request_without_answers_starts_over() -> None:
 
     stretches = results.start_run(changed)
 
-    assert stretches == [Stretch(CALL, 0)]
+    assert stretches == [Stretch(CALL)]
     assert results.headers() == ["Recording", "Part", "Status", "Tokens", "laughter"]
     assert cells(results) == [("call.wav", "", "Waiting", "", "")]
 
@@ -451,7 +454,7 @@ def test_each_row_carries_its_response_or_error() -> None:
         not_sent(2, 548_000, 822_000),
         finish=True,
     )
-    results.record(Unreadable(Stretch(CALL, 0), ValueError("The audio is empty.")))
+    unreadable(results, CALL)
 
     assert [row.detail for row in results.rows()] == [
         response(run_id="run-0").model_dump(mode="json"),
@@ -582,8 +585,7 @@ def test_estimates_are_offered_until_the_first_answer() -> None:
 
 def test_no_estimate_is_offered_when_the_next_run_would_send_nothing() -> None:
     results = started(CALL, LONG_CALL)
-    results.record(Started(Stretch(CALL, 0)))
-    results.record(Unreadable(Stretch(CALL, 0), ValueError("The audio is empty.")))
+    unreadable(results, CALL)
     results.end_run()
     assert results.can_estimate()
 
@@ -594,14 +596,13 @@ def test_no_estimate_is_offered_when_the_next_run_would_send_nothing() -> None:
 
 def test_an_estimate_covers_only_what_the_next_run_would_send() -> None:
     results = started(LONG_CALL, CALL)
-    results.record(Started(Stretch(CALL, 0)))
-    results.record(Unreadable(Stretch(CALL, 0), ValueError("The audio is empty.")))
+    unreadable(results, CALL)
     results.end_run()
     table = cells(results)
 
     stretches = results.start_estimate(REQUEST)
 
-    assert stretches == [Stretch(LONG_CALL, 0)]
+    assert stretches == [Stretch(LONG_CALL)]
     assert cells(results) == table
 
 
@@ -619,7 +620,7 @@ def test_the_estimate_has_a_status_of_its_own() -> None:
     results.record_estimate(Estimated(Stretch(LONG_CALL), 274_000, 1_100))
     results.record_estimate(TooShort(Stretch(CALL), 3_000))
     results.record_estimate(Unreadable(Stretch(notes), ValueError("Not audio.")))
-    results.finish_estimate()
+    results.end_estimate(stopped=False)
 
     assert results.estimate_status() == (
         "The next run is estimated at 2,300 input tokens over 2 parts. "
@@ -633,7 +634,6 @@ def test_the_estimate_has_a_status_of_its_own() -> None:
     "change",
     [
         pytest.param(lambda results: results.set_recordings([CALL]), id="recordings"),
-        pytest.param(lambda results: results.clear_estimate(), id="request"),
         pytest.param(lambda results: results.start_run(REQUEST), id="run"),
         pytest.param(lambda results: results.clear(), id="clear"),
     ],
@@ -642,10 +642,20 @@ def test_a_change_removes_the_estimate(change: Callable[[Results], object]) -> N
     results = started(CALL)
     results.start_estimate(REQUEST)
     results.record_estimate(Estimated(Stretch(CALL), 60_000, 1_000))
-    results.finish_estimate()
+    results.end_estimate(stopped=False)
     assert results.estimate_status().startswith("The next run is estimated")
 
     change(results)
+
+    assert results.estimate_status() == ""
+
+
+def test_a_stopped_estimate_is_discarded() -> None:
+    results = started(CALL)
+    results.start_estimate(REQUEST)
+    results.record_estimate(Estimated(Stretch(CALL), 60_000, 1_000))
+
+    results.end_estimate(stopped=True)
 
     assert results.estimate_status() == ""
 
@@ -658,7 +668,7 @@ def test_an_error_ends_the_estimate_with_its_reason() -> None:
 
     results.record_estimate(BatchStopped(httpx.ReadTimeout("timed out")))
     results.record_estimate(Estimated(Stretch(LONG_CALL), 60_000, 1_000))
-    results.finish_estimate()
+    results.end_estimate(stopped=False)
 
     assert results.estimate_status() == "Estimating stopped by a timeout."
     assert results.status() == status

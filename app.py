@@ -85,6 +85,8 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
         session = gr.State(Session, delete_callback=Session.close)
 
         with gr.Sidebar(width=420):
+            # The height matches the list of four files in assets/app.css, so adding
+            # files doesn't resize the box.
             recordings = gr.File(
                 file_count="multiple",
                 file_types=[".mp3", ".wav"],
@@ -127,6 +129,7 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
         # The estimate gets a line of its own across the page, kept while empty, so
         # showing one doesn't move the table.
         estimate_status = gr.Markdown(BLANK_LINE)
+        # The table's height keeps the whole page within a 1440 by 900 window.
         table = gr.Dataframe(
             headers=list(COLUMNS),
             label="Results",
@@ -166,6 +169,7 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
                 estimate_status,
                 table,
                 estimate_button,
+                clear_button,
                 heading,
                 audio,
                 response,
@@ -246,8 +250,14 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
             show_progress="hidden",
             api_visibility="private",
         )
+
+        # Gradio passes gr.SelectData by reading the handler's type hints, which a
+        # partial hides.
+        async def select(session: Session, event: gr.SelectData) -> Updates:
+            return await _select(page, session, event)
+
         table.select(
-            _select,
+            select,
             inputs=session,
             outputs=[table, heading, audio, response],
             show_progress_on=audio,
@@ -263,16 +273,14 @@ def _asset(name: str) -> str:
 def _set_recordings(page: Page, paths: list[str] | None, session: Session) -> Updates:
     recordings = [Path(path) for path in paths or []]
     session.results.set_recordings(recordings)
-    updates: Updates = {
-        **_status_and_table(page, session),
-        page.estimate_button: gr.Button(interactive=session.results.can_estimate()),
-    }
+    updates = {**_status_and_table(page, session), **_idle_buttons(page, session)}
     if session.selected is not None and session.selected[0] not in recordings:
-        session.selected = None
-        updates |= _no_selection(page)
+        updates |= _deselect(page, session)
     return updates
 
 
+# A validator gets the same inputs as its event's handler, so _run and _estimate
+# take the recordings that only this check reads.
 def _check(paths: list[str] | None, text: str, session: Session) -> tuple[Any, ...]:
     try:
         session.results.check_request(parse_request(text))
@@ -325,14 +333,9 @@ async def _run(
     # A row picked during the run stays selected, so its playback isn't cut off.
     rows = results.rows()
     if rows and not session.chose_row:
-        heading, audio, response = await _show(session, rows[0])
+        shown = await _show(page, session, rows[0])
         if not session.chose_row:
-            yield {
-                page.table: _table(session),
-                page.heading: heading,
-                page.audio: audio,
-                page.response: response,
-            }
+            yield {page.table: _table(session), **shown}
 
 
 async def _estimate(
@@ -351,10 +354,7 @@ async def _estimate(
     async for progress in estimate(client, request, stretches, session.stop):
         results.record_estimate(progress)
         yield {page.estimate_status: _estimate_line(session)}
-    if session.stop.is_set():
-        results.clear_estimate()
-    else:
-        results.finish_estimate()
+    results.end_estimate(stopped=session.stop.is_set())
     yield {**_unlocked(page, session), page.estimate_status: _estimate_line(session)}
 
 
@@ -372,37 +372,31 @@ async def _stop(session: Session) -> gr.Button:
 
 def _clear(page: Page, session: Session) -> Updates:
     session.results.clear()
-    session.selected = None
     return {
         **_status_and_table(page, session),
-        page.estimate_button: gr.Button(interactive=session.results.can_estimate()),
-        page.clear_button: gr.Button(interactive=False),
+        **_idle_buttons(page, session),
         page.csv_button: gr.DownloadButton(value=None, interactive=False),
         page.json_button: gr.DownloadButton(value=None, interactive=False),
-        **_no_selection(page),
+        **_deselect(page, session),
     }
 
 
-# Gradio passes gr.SelectData by reading the handler's type hints, which a partial
-# hides, so this handler can't be given the Page and returns its outputs in order.
-async def _select(
-    session: Session, event: gr.SelectData
-) -> tuple[dict[str, Any], str, Path, dict[str, object] | None]:
+async def _select(page: Page, session: Session, event: gr.SelectData) -> Updates:
     session.chose_row = True
-    selection = await _show(session, session.shown[event.index[0]])
-    return _table(session), *selection
+    shown = await _show(page, session, session.shown[event.index[0]])
+    return {page.table: _table(session), **shown}
 
 
-async def _show(
-    session: Session, row: Row
-) -> tuple[str, Path, dict[str, object] | None]:
-    session.selected = _key(row)
-    name, span, *_ = row.cells
-    title = f"{name}, {span}" if span else name
+async def _show(page: Page, session: Session, row: Row) -> Updates:
+    session.selected = row.key
     # The player gets the part on its own, so its times match the response's, which
     # count from the start of the part.
     audio = row.recording if row.audio is None else await _clip(session, row.audio)
-    return f"### Selected part: {title}", audio, row.detail
+    return {
+        page.heading: f"### Selected part: {row.title}",
+        page.audio: audio,
+        page.response: row.detail,
+    }
 
 
 async def _clip(session: Session, stretch: Stretch) -> Path:
@@ -439,8 +433,14 @@ def _unlocked(page: Page, session: Session) -> Updates:
         page.editor: gr.Code(interactive=True),
         page.run_button: gr.Button(visible=True),
         page.stop_button: gr.Button(visible=False),
+        **_idle_buttons(page, session),
+    }
+
+
+def _idle_buttons(page: Page, session: Session) -> Updates:
+    return {
         page.estimate_button: gr.Button(interactive=session.results.can_estimate()),
-        page.clear_button: gr.Button(interactive=session.results.has_results()),
+        page.clear_button: gr.Button(interactive=session.results.can_clear()),
     }
 
 
@@ -456,7 +456,8 @@ def _estimate_line(session: Session) -> str:
     return session.results.estimate_status() or BLANK_LINE
 
 
-def _no_selection(page: Page) -> Updates:
+def _deselect(page: Page, session: Session) -> Updates:
+    session.selected = None
     return {page.heading: NO_SELECTION, page.audio: None, page.response: None}
 
 
@@ -474,7 +475,7 @@ def _table(session: Session) -> dict[str, Any]:
 
 
 def _styles(session: Session, row: Row, numeric: list[bool]) -> list[str]:
-    selected = _key(row) == session.selected
+    selected = row.key == session.selected
     styles = []
     for column, number in enumerate(numeric):
         style = [SELECTED_STYLE] if selected else []
@@ -484,10 +485,6 @@ def _styles(session: Session, row: Row, numeric: list[bool]) -> list[str]:
             style.append(FAILED_STYLE)
         styles.append("; ".join(style))
     return styles
-
-
-def _key(row: Row) -> tuple[Path, int | None]:
-    return row.recording, None if row.part is None else row.part.start_ms
 
 
 def main() -> None:
