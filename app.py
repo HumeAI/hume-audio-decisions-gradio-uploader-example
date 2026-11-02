@@ -11,7 +11,7 @@ import gradio as gr
 from gradio.components import Component
 from hume_audio_decisions import AsyncDecisionsClient
 
-from evaluation import Stretch, cut, estimate, evaluate, make_client
+from evaluation import Stretch, check_with_api, cut, estimate, evaluate, make_client
 from questions import DEFAULT_REQUEST, parse_request
 from results import COLUMNS, Results, Row
 
@@ -203,7 +203,7 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
                 audio,
                 response,
             ],
-            validator=_check,
+            validator=partial(_check, client),
             show_progress="hidden",
             api_visibility="private",
         )
@@ -219,7 +219,7 @@ def build(client: AsyncDecisionsClient) -> gr.Blocks:
                 clear_button,
                 estimate_status,
             ],
-            validator=_check,
+            validator=partial(_check, client),
             show_progress="hidden",
             api_visibility="private",
         )
@@ -291,9 +291,16 @@ def _set_recordings(page: Page, paths: list[str] | None, session: Session) -> Up
 
 # A validator gets the same inputs as its event's handler, so _run and _estimate
 # take the recordings that only this check reads.
-def _check(paths: list[str] | None, text: str, session: Session) -> tuple[Any, ...]:
+async def _check(
+    client: AsyncDecisionsClient,
+    paths: list[str] | None,
+    text: str,
+    session: Session,
+) -> tuple[Any, ...]:
     try:
-        session.results.check_request(parse_request(text))
+        request = parse_request(text)
+        session.results.check_request(request)
+        await check_with_api(client, request)
     except ValueError as error:
         request_check = gr.validate(is_valid=False, message=str(error))
     else:

@@ -1,6 +1,7 @@
 import asyncio
 import itertools
 import json
+import re
 import time
 import wave
 from collections.abc import Callable, Coroutine, Sequence
@@ -24,6 +25,7 @@ from evaluation import (
     Stretch,
     TooShort,
     Unreadable,
+    check_with_api,
     cut,
     estimate,
     evaluate,
@@ -435,3 +437,68 @@ async def test_a_timeout_stops_the_estimate(tmp_path: Path) -> None:
 
     assert isinstance(stopped, BatchStopped)
     assert isinstance(stopped.error, httpx.ReadTimeout)
+
+
+async def test_checks_the_request_with_one_estimate_of_the_shortest_part() -> None:
+    handle, requests = capture(estimated)
+    request = DecisionsRequest(context="A phone call.", questions=REQUEST.questions)
+
+    await check_with_api(mock_client(handle, FAST), request)
+
+    (sent,) = requests
+    assert sent.url.path == "/v0/decisions/file/input_tokens"
+    assert json.loads(sent.content) == {
+        "audio_duration_ms": 5_000,
+        "context": "A phone call.",
+        "questions": {
+            "speech": {"type": "noul", "instructions": "Is someone speaking?"}
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        pytest.param(
+            {
+                "code": "question_invalid",
+                "message": "must not be empty",
+                "param": "/questions/speech~1tone/instructions",
+            },
+            "questions.speech/tone.instructions: must not be empty.",
+            id="question",
+        ),
+        pytest.param(
+            {
+                "code": "message_invalid",
+                "message": "questions must hold at least one question",
+            },
+            "questions must hold at least one question.",
+            id="no param",
+        ),
+    ],
+)
+async def test_a_request_the_api_rejects_fails_the_check(
+    body: dict[str, str], message: str
+) -> None:
+    handle, _ = capture(
+        lambda: httpx.Response(400, json={"type": "error", "request_id": "req", **body})
+    )
+
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        await check_with_api(mock_client(handle, FAST), REQUEST)
+
+
+async def test_an_error_that_is_not_about_the_request_passes_the_check() -> None:
+    handle, _ = capture(
+        lambda: httpx.Response(401, json={"message": "Invalid API key"})
+    )
+
+    await check_with_api(mock_client(handle, FAST), REQUEST)
+
+
+async def test_a_timeout_passes_the_check() -> None:
+    async def handle(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out")
+
+    await check_with_api(mock_client(handle, FAST), REQUEST)

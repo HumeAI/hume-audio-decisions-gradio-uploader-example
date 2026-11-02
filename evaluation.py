@@ -129,6 +129,28 @@ def estimate(
     return _run_workers(partial(_estimate_stretch, client, request), stretches, stop)
 
 
+async def check_with_api(
+    client: AsyncDecisionsClient, request: DecisionsRequest
+) -> None:
+    # Estimating input tokens runs the same checks on the questions and context as
+    # a decisions request, without audio and without billing, so the app keeps no
+    # copy of the API's limits.
+    try:
+        await client.decisions.input_tokens(
+            audio_duration_ms=MIN_PART_MS,
+            questions=request.questions,
+            context=request.context,
+        )
+    except ApiError as error:
+        body = error.body
+        if isinstance(body, Error) and body.code in _BATCH_STOPPING_CODES:
+            raise ValueError(_describe_request_error(body)) from error
+    # Any other error comes from the key, the account or the connection, which Run
+    # and Estimate report on their own.
+    except httpx.HTTPError:
+        pass
+
+
 def is_file_error(error: Exception) -> bool:
     return _is_api_error(error, _FILE_ERROR_STATUSES, _FILE_ERROR_CODES)
 
@@ -273,6 +295,18 @@ def _is_api_error(
         error.status_code in statuses
         or (isinstance(error.body, Error) and error.body.code in codes)
     )
+
+
+def _describe_request_error(body: Error) -> str:
+    message = body.message.removesuffix(".")
+    param = body.param
+    if param is None or not param.startswith("/"):
+        return f"{message}."
+    # param is a JSON Pointer, so ~1 stands for / and ~0 for ~ in a question ID.
+    tokens = [
+        token.replace("~1", "/").replace("~0", "~") for token in param[1:].split("/")
+    ]
+    return f"{'.'.join(tokens)}: {message}."
 
 
 def _durations(stretch: Stretch) -> list[int]:

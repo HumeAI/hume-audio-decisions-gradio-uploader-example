@@ -3,9 +3,6 @@ import json
 from hume_audio_decisions import DecisionsRequest
 from pydantic import ValidationError
 
-MAX_QUESTIONS = 100
-MAX_QUESTION_ID_LENGTH = 256
-
 DEFAULT_REQUEST = json.dumps(
     {
         "context": (
@@ -54,23 +51,9 @@ def parse_request(text: str) -> DecisionsRequest:
         raise ValueError("The request must be a JSON object.")
 
     try:
-        request = DecisionsRequest.model_validate(data)
+        return DecisionsRequest.model_validate(data)
     except ValidationError as error:
         raise ValueError(_describe(error)) from error
-
-    count = len(request.questions)
-    if not 1 <= count <= MAX_QUESTIONS:
-        raise ValueError(
-            f"questions: A request takes 1 to {MAX_QUESTIONS} questions, "
-            f"and this one has {count}."
-        )
-    for question_id in request.questions:
-        if not 1 <= len(question_id) <= MAX_QUESTION_ID_LENGTH:
-            raise ValueError(
-                f"questions: A question ID takes 1 to {MAX_QUESTION_ID_LENGTH} "
-                f"characters, and one has {len(question_id)}."
-            )
-    return request
 
 
 def _reject_repeated_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
