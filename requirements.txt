@@ -109,7 +109,7 @@ packaging==26.3
     #   huggingface-hub
 pandas==3.1.0
     # via gradio
-pillow==12.3.0
+pillow==13.0.0
     # via gradio
 pydantic==2.14.2
     # via
