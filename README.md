@@ -59,7 +59,7 @@ All questions in a request are answered together, so adding, removing or rewordi
 
 1. Recordings must be MP3, or WAV with PCM or floating-point samples. A WAV file in another encoding, such as μ-law, fails as an unreadable file, and its response shows an ffmpeg command that converts it.
 2. Each file can be up to 1 GB. The app holds a whole recording in memory while it sends it or cuts out the selected part, and each run sends four recordings at a time.
-3. The app sends at most 50 requests a minute. Each organization can send 60 requests a minute across all of its API keys, so this leaves room for other work.
+3. The app sends at most 50 requests a minute. Each organization can send 600 requests a minute across all of its API keys, so this leaves room for other work.
 4. Results last as long as the browser tab. Reloading the page starts over, so download the results first.
 5. The app has no sign-in, so anyone who can reach it can spend your API key. It listens only on your own machine; don't share or expose it.
 
