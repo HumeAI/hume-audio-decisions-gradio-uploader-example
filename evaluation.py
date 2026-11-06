@@ -21,7 +21,7 @@ from hume_audio_decisions.audio_helpers import (
 )
 from hume_audio_decisions.core import ApiError
 
-# Every API key in an organization shares a limit of 60 requests a minute, so this
+# Every API key in an organization shares a limit of 600 requests a minute, so this
 # leaves room for other work.
 REQUESTS_PER_MINUTE = 50
 CONCURRENT_RECORDINGS = 4
