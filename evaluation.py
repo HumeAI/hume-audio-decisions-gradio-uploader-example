@@ -25,7 +25,7 @@ from hume_audio_decisions.core import ApiError
 # leaves room for other work.
 REQUESTS_PER_MINUTE = 50
 CONCURRENT_RECORDINGS = 4
-MIN_PART_MS = 5_000
+MIN_PART_MS = 1_000
 MAX_PART_MS = 300_000
 MAX_RETRIES = 5
 

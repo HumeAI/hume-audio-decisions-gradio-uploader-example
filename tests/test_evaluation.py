@@ -387,12 +387,12 @@ async def test_estimates_only_the_stretch_it_is_given(tmp_path: Path) -> None:
 async def test_a_part_too_short_to_send_is_counted_without_a_request(
     tmp_path: Path,
 ) -> None:
-    stretch = write_wav(tmp_path / "short.wav", 3_000)
+    stretch = write_wav(tmp_path / "short.wav", 500)
     handle, requests = capture(estimated)
 
     progress = await collect_estimates(handle, [stretch])
 
-    assert progress == [TooShort(stretch, 3_000)]
+    assert progress == [TooShort(stretch, 500)]
     assert requests == []
 
 
@@ -448,7 +448,7 @@ async def test_checks_the_request_with_one_estimate_of_the_shortest_part() -> No
     (sent,) = requests
     assert sent.url.path == "/v0/decisions/file/input_tokens"
     assert json.loads(sent.content) == {
-        "audio_duration_ms": 5_000,
+        "audio_duration_ms": 1_000,
         "context": "A phone call.",
         "questions": {
             "speech": {"type": "noul", "instructions": "Is someone speaking?"}
